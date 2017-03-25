@@ -153,6 +153,10 @@ func (i *Instance) VFS() vfs.VFS {
 func (i *Instance) makeVFS() error {
 	fsURL := config.FsURL()
 	mutex := vfs.NewMemLock(i.Domain)
+	// index := vfs.NewCachedIndexer(
+	// 	vfs.NewCouchdbIndexer(i),
+	// 	vfs.NewMemIndexer(i.Domain, 256),
+	// )
 	index := vfs.NewCouchdbIndexer(i)
 	disk := vfs.DiskThresholder(i)
 	var err error
