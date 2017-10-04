@@ -148,8 +148,7 @@ func sendLoginNotification(i *instance.Instance, l *LoginEntry, clientRegistrati
 	if clientRegistrationID != "" {
 		sendNotification = true
 	} else {
-		var results []*LoginEntry
-		r := &couchdb.FindRequest{
+		opts := &couchdb.FindRequest{
 			UseIndex: "by-os-browser-ip",
 			Selector: mango.And(
 				mango.Equal("os", l.OS),
@@ -158,8 +157,9 @@ func sendLoginNotification(i *instance.Instance, l *LoginEntry, clientRegistrati
 			),
 			Limit: 1,
 		}
-		err := couchdb.FindDocs(i, consts.SessionsLogins, r, &results)
-		sendNotification = err != nil || len(results) == 0
+		rows := couchdb.FindDocs(i, consts.SessionsLogins, opts)
+		done, err := rows.Next()
+		sendNotification = err == nil && !done
 	}
 
 	if !sendNotification {

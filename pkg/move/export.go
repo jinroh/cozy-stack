@@ -67,13 +67,27 @@ func createDir(tw *tar.Writer, dir *vfs.DirDoc, name string) error {
 
 func albums(tw *tar.Writer, instance *instance.Instance) error {
 	doctype := consts.PhotosAlbums
-	allReq := &couchdb.AllDocsRequest{}
+
 	var results []map[string]interface{}
-	if err := couchdb.GetAllDocs(instance, doctype, allReq, &results); err != nil {
-		if couchdb.IsNoDatabaseError(err) {
-			return nil
+	{
+		rows := couchdb.GetAllDocs(instance, doctype)
+		for {
+			var v map[string]interface{}
+			done, err := rows.Next()
+			if couchdb.IsNoDatabaseError(err) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if done {
+				break
+			}
+			if err = rows.ScanDoc(&v); err != nil {
+				return err
+			}
+			results = append(results, v)
 		}
-		return err
 	}
 
 	hdrDir := &tar.Header{
@@ -114,43 +128,49 @@ func albums(tw *tar.Writer, instance *instance.Instance) error {
 		return err
 	}
 
-	req := &couchdb.ViewRequest{
-		StartKey:    []string{consts.PhotosAlbums},
-		EndKey:      []string{consts.PhotosAlbums, couchdb.MaxString},
-		IncludeDocs: true,
-		Reduce:      false,
-	}
-	res := &couchdb.ViewResponse{}
-	if err := couchdb.ExecView(instance, consts.FilesReferencedByView, req, res); err != nil {
-		return err
-	}
-
 	var buf bytes.Buffer
-	fs := instance.VFS()
 	size = 0
-	for _, v := range res.Rows {
-		key := v.Key.([]interface{})
-		id := key[1].(string)
-		doc, err := fs.FileByID(v.ID)
-		if err != nil {
-			return err
+	{
+		fs := instance.VFS()
+		req := &couchdb.ViewRequest{
+			StartKey: []string{consts.PhotosAlbums},
+			EndKey:   []string{consts.PhotosAlbums, couchdb.MaxString},
 		}
-		path, err := fs.FilePath(doc)
-		if err != nil {
-			return err
-		}
-		ref := Reference{
-			Albumid:  id,
-			Filepath: path,
-		}
-		b, err := json.Marshal(ref)
-		if err != nil {
-			return err
-		}
-		b = append(b, '\n')
-		size += len(b)
-		if _, err = buf.Write(b); err != nil {
-			return err
+		rows := couchdb.ExecView(instance, consts.FilesReferencedByView, req)
+		for {
+			done, err := rows.Next()
+			if err != nil {
+				return err
+			}
+			if done {
+				break
+			}
+			var key []string
+			if err = rows.ScanKey(&key); err != nil {
+				return err
+			}
+			id := key[1]
+			doc, err := fs.FileByID(rows.ID())
+			if err != nil {
+				return err
+			}
+			path, err := fs.FilePath(doc)
+			if err != nil {
+				return err
+			}
+			ref := Reference{
+				Albumid:  id,
+				Filepath: path,
+			}
+			b, err := json.Marshal(ref)
+			if err != nil {
+				return err
+			}
+			b = append(b, '\n')
+			size += len(b)
+			if _, err = buf.Write(b); err != nil {
+				return err
+			}
 		}
 	}
 

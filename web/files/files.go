@@ -755,9 +755,9 @@ const maxMangoLimit = 100
 // used to retrieve files and their metadata from a mango query.
 func FindFilesMango(c echo.Context) error {
 	instance := middlewares.GetInstance(c)
-	var findRequest map[string]interface{}
+	var opts map[string]interface{}
 
-	if err := json.NewDecoder(c.Request().Body).Decode(&findRequest); err != nil {
+	if err := json.NewDecoder(c.Request().Body).Decode(&opts); err != nil {
 		return jsonapi.NewError(http.StatusBadRequest, err)
 	}
 
@@ -767,25 +767,41 @@ func FindFilesMango(c echo.Context) error {
 
 	// drop the fields, they can cause issues if not properly manipulated
 	// TODO : optimization potential, necessary fields so far are class & type
-	delete(findRequest, "fields")
+	delete(opts, "fields")
 
-	limit, hasLimit := findRequest["limit"].(float64)
+	limit, hasLimit := opts["limit"].(float64)
 	if !hasLimit || limit > maxMangoLimit {
 		limit = 100
 	}
 	skip := 0
-	skipF64, hasSkip := findRequest["skip"].(float64)
+	skipF64, hasSkip := opts["skip"].(float64)
 	if hasSkip {
 		skip = int(skipF64)
 	}
 
 	// add 1 so we know if there is more.
-	findRequest["limit"] = limit + 1
+	opts["limit"] = limit + 1
 
-	var results []vfs.DirOrFileDoc
-	err := couchdb.FindDocsRaw(instance, consts.Files, &findRequest, &results)
-	if err != nil {
-		return err
+	var results []jsonapi.Object
+	rows := couchdb.FindDocsRaw(instance, consts.Files, opts)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		var dof *vfs.DirOrFileDoc
+		if err = rows.ScanDoc(&dof); err != nil {
+			return err
+		}
+		d, f := dof.Refine()
+		if d != nil {
+			results = append(results, newDir(d))
+		} else {
+			results = append(results, newFile(f, instance))
+		}
 	}
 
 	var total int
@@ -796,17 +812,7 @@ func FindFilesMango(c echo.Context) error {
 		total = skip + len(results) // let the client know its done.
 	}
 
-	out := make([]jsonapi.Object, len(results))
-	for i, dof := range results {
-		d, f := dof.Refine()
-		if d != nil {
-			out[i] = newDir(d)
-		} else {
-			out[i] = newFile(f, instance)
-		}
-	}
-
-	return jsonapi.DataListWithTotal(c, http.StatusOK, total, out, nil)
+	return jsonapi.DataListWithTotal(c, http.StatusOK, total, results, nil)
 
 }
 

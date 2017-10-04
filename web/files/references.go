@@ -1,7 +1,6 @@
 package files
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/pkg/couchdb"
-	"github.com/cozy/cozy-stack/pkg/instance"
 	"github.com/cozy/cozy-stack/pkg/vfs"
 	"github.com/cozy/cozy-stack/web/jsonapi"
 	"github.com/cozy/cozy-stack/web/middlewares"
@@ -18,20 +16,6 @@ import (
 )
 
 const maxRefLimit = 100
-
-func rawMessageToObject(i *instance.Instance, bb json.RawMessage) (jsonapi.Object, error) {
-	var dof vfs.DirOrFileDoc
-	err := json.Unmarshal(bb, &dof)
-	if err != nil {
-		return nil, err
-	}
-	d, f := dof.Refine()
-	if d != nil {
-		return newDir(d), nil
-	}
-
-	return newFile(f, i), nil
-}
 
 // ListReferencesHandler list all files referenced by a doc
 // GET /data/:type/:id/relationships/references
@@ -55,15 +39,19 @@ func ListReferencesHandler(c echo.Context) error {
 	key := []string{doctype, id}
 	reqCount := &couchdb.ViewRequest{Key: key, Reduce: true}
 
-	var resCount couchdb.ViewResponse
-	err = couchdb.ExecView(instance, consts.FilesReferencedByView, reqCount, &resCount)
+	rows := couchdb.ExecView(instance, consts.FilesReferencedByView, reqCount)
 	if err != nil {
 		return err
 	}
-
+	done, err := rows.Next()
+	if err != nil {
+		return err
+	}
 	count := 0
-	if len(resCount.Rows) > 0 {
-		count = int(resCount.Rows[0].Value.(float64))
+	if !done {
+		if err = rows.ScanValue(&count); err != nil {
+			return err
+		}
 	}
 
 	sort := c.QueryParam("sort")
@@ -90,47 +78,48 @@ func ListReferencesHandler(c echo.Context) error {
 		Reduce:      false,
 		Descending:  descending,
 	}
-	cursor.ApplyTo(req)
 
-	var res couchdb.ViewResponse
-	err = couchdb.ExecView(instance, view, req, &res)
-	if err != nil {
-		return err
-	}
-
-	cursor.UpdateFrom(&res)
-
-	var links = &jsonapi.LinksList{}
-	if cursor.HasMore() {
-		params, err2 := jsonapi.PaginationCursorToParams(cursor)
-		if err2 != nil {
-			return err2
+	var refs []couchdb.DocReference
+	var objs []jsonapi.Object
+	rows = couchdb.ExecView(instance, view, req)
+	rows.WithCursor(cursor)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return err
 		}
-		links.Next = fmt.Sprintf("%s?%s",
-			c.Request().URL.Path, params.Encode())
-	}
+		if done {
+			break
+		}
 
-	var refs = make([]couchdb.DocReference, len(res.Rows))
-	var docs []jsonapi.Object
-	if includeDocs {
-		docs = make([]jsonapi.Object, len(res.Rows))
-	}
-
-	for i, row := range res.Rows {
-		refs[i] = couchdb.DocReference{
-			ID:   row.ID,
+		refs = append(refs, couchdb.DocReference{
+			ID:   rows.ID(),
 			Type: consts.Files,
-		}
+		})
 
 		if includeDocs {
-			docs[i], err = rawMessageToObject(instance, row.Doc)
-			if err != nil {
+			var dof vfs.DirOrFileDoc
+			if err = rows.ScanDoc(&dof); err != nil {
 				return err
 			}
+			var obj jsonapi.Object
+			d, f := dof.Refine()
+			if d != nil {
+				obj = newDir(d)
+			} else {
+				obj = newFile(f, instance)
+			}
+			objs = append(objs, obj)
 		}
 	}
 
-	return jsonapi.DataRelations(c, http.StatusOK, refs, count, links, docs)
+	newCursor := rows.NextCursor()
+	var links = &jsonapi.LinksList{}
+	if newCursor.HasMore() {
+		links.Next = fmt.Sprintf("%s?%s", c.Request().URL.Path, newCursor.ToQueryParams().Encode())
+	}
+
+	return jsonapi.DataRelations(c, http.StatusOK, refs, count, links, objs)
 }
 
 // AddReferencesHandler add some files references to a doc

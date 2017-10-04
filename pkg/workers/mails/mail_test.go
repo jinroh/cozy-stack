@@ -352,7 +352,7 @@ func TestSendMailNoReply(t *testing.T) {
 		assert.Equal(t, "noreply@noreply.triggers", opts.From.Email)
 		return errors.New("yes")
 	}
-	db := couchdb.SimpleDatabasePrefix("noreply.triggers")
+	db := couchdb.NewDatabase("noreply.triggers")
 	doc := &couchdb.JSONDoc{
 		M:    map[string]interface{}{"email": "me@me"},
 		Type: consts.Settings,
@@ -398,7 +398,7 @@ func TestSendMailFrom(t *testing.T) {
 		assert.Equal(t, "me@me", opts.ReplyTo.Email)
 		return errors.New("yes")
 	}
-	db := couchdb.SimpleDatabasePrefix("from.triggers")
+	db := couchdb.NewDatabase("from.triggers")
 	doc := &couchdb.JSONDoc{
 		M:    map[string]interface{}{"email": "me@me"},
 		Type: consts.Settings,

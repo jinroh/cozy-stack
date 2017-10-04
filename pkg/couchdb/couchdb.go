@@ -18,6 +18,10 @@ import (
 	"github.com/google/go-querystring/query"
 )
 
+var couchdbClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
 // MaxString is the unicode character "\uFFFF", useful in query as
 // a upperbound for string.
 const MaxString = mango.MaxString
@@ -45,17 +49,17 @@ type Database interface {
 	Prefix() string
 }
 
-// SimpleDatabase implements the Database interface
-type simpleDB struct {
+// prefixedDB implements the Database interface
+type prefixedDB struct {
 	prefix string
 }
 
-// Prefix implements the Database interface on simpleDB
-func (sdb *simpleDB) Prefix() string { return sdb.prefix }
+// Prefix implements the Database interface on prefixedDB
+func (sdb *prefixedDB) Prefix() string { return sdb.prefix }
 
-// SimpleDatabasePrefix returns a Database from a prefix, useful for test
-func SimpleDatabasePrefix(prefix string) Database {
-	return &simpleDB{prefix: prefix}
+// NewDatabase returns a Database from a prefix, useful for test
+func NewDatabase(domain string) Database {
+	return &prefixedDB{prefix: domain}
 }
 
 func rtevent(db Database, verb string, doc, oldDoc Doc) {
@@ -74,11 +78,11 @@ func rtevent(db Database, verb string, doc, oldDoc Doc) {
 }
 
 // GlobalDB is the prefix used for stack-scoped db
-var GlobalDB = SimpleDatabasePrefix("global")
+var GlobalDB = NewDatabase("global")
 
 // GlobalSecretsDB is the the prefix used for db which hold
 // a cozy stack secrets.
-var GlobalSecretsDB = SimpleDatabasePrefix("secrets")
+var GlobalSecretsDB = NewDatabase("secrets")
 
 // View is the map/reduce thing in CouchDB
 type View struct {
@@ -217,24 +221,21 @@ func (j JSONDoc) Valid(field, value string) bool {
 	return fmt.Sprintf("%v", j.Get(field)) == value
 }
 
-var couchdbClient = &http.Client{
-	Timeout: 10 * time.Second,
-}
+var dbNameEscaper = strings.NewReplacer(
+	".", "-",
+	":", "-",
+)
+
+var dbNameUnescaper = strings.NewReplacer(
+	"-", ".",
+)
 
 func unescapeCouchdbName(name string) string {
-	return strings.Replace(name, "-", ".", -1)
+	return dbNameUnescaper.Replace(name)
 }
 
 func escapeCouchdbName(name string) string {
-	name = strings.Replace(name, ".", "-", -1)
-	name = strings.Replace(name, ":", "-", -1)
-	return strings.ToLower(name)
-}
-
-func makeDBName(db Database, doctype string) string {
-	// @TODO This should be better analysed
-	dbname := escapeCouchdbName(db.Prefix() + "/" + doctype)
-	return url.PathEscape(dbname)
+	return dbNameEscaper.Replace(strings.ToLower(name))
 }
 
 func dbNameHasPrefix(dbname, dbprefix string) (bool, string) {
@@ -245,11 +246,19 @@ func dbNameHasPrefix(dbname, dbprefix string) (bool, string) {
 	return true, strings.Replace(dbname, dbprefix, "", 1)
 }
 
-func docURL(db Database, doctype, id string) string {
-	return makeDBName(db, doctype) + "/" + url.PathEscape(id)
+func docPath(id string) string {
+	return "/" + url.PathEscape(id)
 }
 
-func makeRequest(db Database, method, path string, reqbody interface{}, resbody interface{}) error {
+func makeDBName(db Database, doctype string) string {
+	return url.PathEscape(escapeCouchdbName(db.Prefix() + "/" + doctype))
+}
+
+func doctypeRequest(db Database, method, doctype, path string, req interface{}, out interface{}) error {
+	return makeRequest(db, method, "/"+makeDBName(db, doctype)+path, req, out)
+}
+
+func makeRequest(db Database, method, fullPath string, reqbody interface{}, out interface{}) error {
 	var reqjson []byte
 	var err error
 
@@ -260,17 +269,18 @@ func makeRequest(db Database, method, path string, reqbody interface{}, resbody 
 		}
 	}
 
-	log := logger.WithDomain(db.Prefix())
-	if logger.IsDebug(log) {
-		log.Debugf("request: %s %s %s", method, path, string(bytes.TrimSpace(reqjson)))
+	prefix := db.Prefix()
+	if prefix == "" {
+		return fmt.Errorf("You need to provide a valid database")
 	}
 
-	req, err := http.NewRequest(
-		method,
-		config.CouchURL().String()+path,
-		bytes.NewReader(reqjson),
-	)
-	// Possible err = wrong method, unparsable url
+	log := logger.WithDomain(prefix)
+	if logger.IsDebug(log) {
+		log.Debugf("request: %s %s %s", method, fullPath, string(bytes.TrimSpace(reqjson)))
+	}
+
+	u := config.CouchURL(fullPath)
+	req, err := http.NewRequest(method, u, bytes.NewReader(reqjson))
 	if err != nil {
 		return newRequestError(err)
 	}
@@ -285,10 +295,9 @@ func makeRequest(db Database, method, path string, reqbody interface{}, resbody 
 			req.SetBasicAuth(auth.Username(), p)
 		}
 	}
+
 	start := time.Now()
 	resp, err := couchdbClient.Do(req)
-	elapsed := time.Since(start)
-	// Possible err = mostly connection failure
 	if err != nil {
 		err = newConnectionError(err)
 		log.Error(err.Error())
@@ -296,8 +305,9 @@ func makeRequest(db Database, method, path string, reqbody interface{}, resbody 
 	}
 	defer resp.Body.Close()
 
-	if elapsed.Seconds() >= 10 {
-		log.Printf("slow request on %s %s (%s)", method, path, elapsed)
+	elapsed := time.Since(start)
+	if elapsed.Seconds() >= 5 {
+		log.Warnf("slow request on %s %s (%s)", method, fullPath, elapsed)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -305,14 +315,13 @@ func makeRequest(db Database, method, path string, reqbody interface{}, resbody 
 		body, err = ioutil.ReadAll(resp.Body)
 		if err != nil {
 			err = newIOReadError(err)
-			log.Error(err.Error())
 		} else {
 			err = newCouchdbError(resp.StatusCode, body)
-			log.Debug(err.Error())
 		}
+		log.Debug(err.Error())
 		return err
 	}
-	if resbody == nil {
+	if out == nil {
 		return nil
 	}
 
@@ -323,9 +332,9 @@ func makeRequest(db Database, method, path string, reqbody interface{}, resbody 
 			return err
 		}
 		log.Debugf("response: %s", string(bytes.TrimSpace(data)))
-		err = json.Unmarshal(data, &resbody)
+		err = json.Unmarshal(data, &out)
 	} else {
-		err = json.NewDecoder(resp.Body).Decode(&resbody)
+		err = json.NewDecoder(resp.Body).Decode(&out)
 	}
 
 	return err
@@ -333,16 +342,15 @@ func makeRequest(db Database, method, path string, reqbody interface{}, resbody 
 
 // DBStatus responds with informations on the database: size, number of
 // documents, sequence numbers, etc.
-func DBStatus(db Database, doctype string) (*DBStatusResponse, error) {
-	var out DBStatusResponse
-	return &out, makeRequest(db, "GET", makeDBName(db, doctype), nil, &out)
+func DBStatus(db Database, doctype string, out interface{}) error {
+	return doctypeRequest(db, http.MethodGet, doctype, "", nil, out)
 }
 
 // AllDoctypes returns a list of all the doctypes that have a database
 // on a given instance
 func AllDoctypes(db Database) ([]string, error) {
 	var dbs []string
-	if err := makeRequest(db, "GET", "/_all_dbs", nil, &dbs); err != nil {
+	if err := makeRequest(db, http.MethodGet, "/_all_dbs", nil, &dbs); err != nil {
 		return nil, err
 	}
 	prefix := escapeCouchdbName(db.Prefix())
@@ -368,37 +376,30 @@ func GetDoc(db Database, doctype, id string, out Doc) error {
 	if id == "" {
 		return fmt.Errorf("Missing ID for GetDoc")
 	}
-	return makeRequest(db, "GET", docURL(db, doctype, id), nil, out)
+	return doctypeRequest(db, http.MethodGet, doctype, docPath(id), nil, out)
 }
 
 // CreateDB creates the necessary database for a doctype
 func CreateDB(db Database, doctype string) error {
-	return makeRequest(db, "PUT", makeDBName(db, doctype), nil, nil)
+	return doctypeRequest(db, http.MethodPut, doctype, "", nil, nil)
 }
 
 // DeleteDB destroy the database for a doctype
 func DeleteDB(db Database, doctype string) error {
-	return makeRequest(db, "DELETE", makeDBName(db, doctype), nil, nil)
+	return doctypeRequest(db, http.MethodDelete, doctype, "", nil, nil)
 }
 
 // DeleteAllDBs will remove all the couchdb doctype databases for
 // a couchdb.DB.
 func DeleteAllDBs(db Database) error {
-
-	dbprefix := db.Prefix()
-
-	if dbprefix == "" {
-		return fmt.Errorf("You need to provide a valid database")
-	}
-
 	var dbsList []string
-	err := makeRequest(db, "GET", "_all_dbs", nil, &dbsList)
+	err := makeRequest(db, http.MethodGet, "/_all_dbs", nil, &dbsList)
 	if err != nil {
 		return err
 	}
 
 	for _, doctypedb := range dbsList {
-		hasPrefix, doctype := dbNameHasPrefix(doctypedb, dbprefix)
+		hasPrefix, doctype := dbNameHasPrefix(doctypedb, db.Prefix())
 		if !hasPrefix {
 			continue
 		}
@@ -433,9 +434,8 @@ func DeleteDoc(db Database, doc Doc) error {
 	}
 
 	var res updateResponse
-	qs := url.Values{"rev": []string{doc.Rev()}}
-	url := docURL(db, doc.DocType(), id) + "?" + qs.Encode()
-	err = makeRequest(db, "DELETE", url, nil, &res)
+	path := docPath(id) + "?rev=" + url.QueryEscape(doc.Rev())
+	err = doctypeRequest(db, http.MethodDelete, doc.DocType(), path, nil, &res)
 	if err != nil {
 		return err
 	}
@@ -461,19 +461,19 @@ func UpdateDoc(db Database, doc Doc) error {
 		return fmt.Errorf("UpdateDoc doc argument should have doctype, id and rev")
 	}
 
-	url := docURL(db, doctype, id)
 	// The old doc is requested to be emitted throught rtevent.
 	// This is useful to keep track of the modifications for the triggers.
 	oldDoc := doc.Clone()
 	if r, ok := oldDoc.(Reseter); ok {
 		r.Reset()
 	}
-	err = makeRequest(db, "GET", url, nil, oldDoc)
+	path := docPath(id)
+	err = doctypeRequest(db, http.MethodGet, doctype, path, nil, oldDoc)
 	if err != nil {
 		return err
 	}
 	var res updateResponse
-	err = makeRequest(db, "PUT", url, doc, &res)
+	err = doctypeRequest(db, http.MethodPut, doctype, path, doc, &res)
 	if err != nil {
 		return err
 	}
@@ -484,12 +484,11 @@ func UpdateDoc(db Database, doc Doc) error {
 
 // BulkUpdateDocs is used to update several docs in one call, as a bulk.
 func BulkUpdateDocs(db Database, doctype string, docs []interface{}) error {
-	url := docURL(db, doctype, "_bulk_docs")
 	body := struct {
 		Docs []interface{} `json:"docs"`
 	}{docs}
 	var res []updateResponse
-	if err := makeRequest(db, "POST", url, body, &res); err != nil {
+	if err := doctypeRequest(db, http.MethodPost, doctype, "/_bulk_docs", body, &res); err != nil {
 		return err
 	}
 	if len(res) != len(docs) {
@@ -517,9 +516,8 @@ func CreateNamedDoc(db Database, doc Doc) error {
 	if doc.Rev() != "" || id == "" || doctype == "" {
 		return fmt.Errorf("CreateNamedDoc should have type and id but no rev")
 	}
-	url := docURL(db, doctype, id)
 	var res updateResponse
-	err = makeRequest(db, "PUT", url, doc, &res)
+	err = doctypeRequest(db, http.MethodPut, doctype, docPath(id), doc, &res)
 	if err != nil {
 		return err
 	}
@@ -571,14 +569,13 @@ func Upsert(db Database, doc Doc) error {
 
 func createDocOrDb(db Database, doc Doc, response interface{}) error {
 	doctype := doc.DocType()
-	dbname := makeDBName(db, doctype)
-	err := makeRequest(db, "POST", dbname, doc, response)
+	err := doctypeRequest(db, http.MethodPost, doctype, "", doc, response)
 	if err == nil || !IsNoDatabaseError(err) {
 		return err
 	}
 	err = CreateDB(db, doctype)
 	if err == nil || IsFileExists(err) {
-		err = makeRequest(db, "POST", dbname, doc, response)
+		err = doctypeRequest(db, http.MethodPost, doctype, "", doc, response)
 	}
 	return err
 }
@@ -609,30 +606,37 @@ func CreateDoc(db Database, doc Doc) error {
 
 // DefineViews creates a design doc with some views
 func DefineViews(db Database, views []*View) error {
+	type viewDesignDoc struct {
+		ID    string           `json:"_id,omitempty"`
+		Rev   string           `json:"_rev,omitempty"`
+		Lang  string           `json:"language"`
+		Views map[string]*View `json:"views"`
+	}
+
 	for _, v := range views {
 		id := "_design/" + v.Name
-		url := makeDBName(db, v.Doctype) + "/" + id
-		doc := &ViewDesignDoc{
+		path := "/_design/" + url.PathEscape(v.Name)
+		doc := &viewDesignDoc{
 			ID:    id,
 			Lang:  "javascript",
 			Views: map[string]*View{v.Name: v},
 		}
-		err := makeRequest(db, http.MethodPut, url, &doc, nil)
+		err := doctypeRequest(db, http.MethodPut, v.Doctype, path, &doc, nil)
 		if IsNoDatabaseError(err) {
 			err = CreateDB(db, v.Doctype)
 			if err != nil {
 				return err
 			}
-			err = makeRequest(db, http.MethodPut, url, &doc, nil)
+			err = doctypeRequest(db, http.MethodPut, v.Doctype, path, &doc, nil)
 		}
 		if IsConflictError(err) {
-			var old ViewDesignDoc
-			err = makeRequest(db, http.MethodGet, url, nil, &old)
+			var old viewDesignDoc
+			err = doctypeRequest(db, http.MethodGet, v.Doctype, path, nil, &old)
 			if err != nil {
 				return err
 			}
 			doc.Rev = old.Rev
-			err = makeRequest(db, http.MethodPut, url, &doc, nil)
+			err = doctypeRequest(db, http.MethodPut, v.Doctype, path, &doc, nil)
 		}
 
 		if err != nil {
@@ -642,45 +646,23 @@ func DefineViews(db Database, views []*View) error {
 	return nil
 }
 
-// ExecView executes the specified view function
-func ExecView(db Database, view *View, req *ViewRequest, results interface{}) error {
-	viewurl := fmt.Sprintf("%s/_design/%s/_view/%s", makeDBName(db, view.Doctype), view.Name, view.Name)
-	if req.GroupLevel > 0 {
-		req.Group = true
-	}
-	v, err := req.Values()
-	if err != nil {
-		return err
-	}
-	viewurl += "?" + v.Encode()
-	if req.Keys != nil {
-		return makeRequest(db, "POST", viewurl, req, &results)
-	}
-	return makeRequest(db, "GET", viewurl, nil, &results)
-}
-
 // DefineIndex define the index on the doctype database
 // see query package on how to define an index
 func DefineIndex(db Database, index *mango.Index) error {
-	_, err := DefineIndexRaw(db, index.Doctype, index.Request)
-	return err
+	return DefineIndexRaw(db, index.Doctype, index.Request, nil)
 }
 
 // DefineIndexRaw defines a index
-func DefineIndexRaw(db Database, doctype string, index interface{}) (*IndexCreationResponse, error) {
-	url := makeDBName(db, doctype) + "/_index"
-	response := &IndexCreationResponse{}
-	err := makeRequest(db, "POST", url, &index, &response)
+func DefineIndexRaw(db Database, doctype string, index interface{}, result interface{}) error {
+	path := "/_index"
+	err := doctypeRequest(db, http.MethodPost, doctype, path, index, result)
 	if IsNoDatabaseError(err) {
 		if err = CreateDB(db, doctype); err != nil {
-			return nil, err
+			return err
 		}
-		err = makeRequest(db, "POST", url, &index, &response)
+		err = doctypeRequest(db, http.MethodPost, doctype, path, index, result)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return response, nil
+	return err
 }
 
 // DefineIndexes defines a list of indexes
@@ -693,126 +675,280 @@ func DefineIndexes(db Database, indexes []*mango.Index) error {
 	return nil
 }
 
+// ExecView executes the specified view function
+func ExecView(db Database, view *View, req *ViewRequest) *ViewRows {
+	return &ViewRows{
+		index: -1,
+		db:    db,
+		view:  view,
+		req:   req,
+	}
+}
+
+type ViewRows struct {
+	index  int
+	rows   []*row
+	db     Database
+	view   *View
+	req    *ViewRequest
+	cursor Cursor
+}
+
+func (r *ViewRows) WithCursor(c Cursor) {
+	r.cursor = c
+	r.cursor.applyTo(r.req)
+}
+
+func (r *ViewRows) NextCursor() Cursor {
+	return r.cursor
+}
+
+func (r *ViewRows) Next() (bool, error) {
+	if r.index == -1 {
+		path := fmt.Sprintf("/_design/%s/_view/%s", r.view.Name, r.view.Name)
+		var res struct {
+			Total int    `json:"total_rows"`
+			Rows  []*row `json:"rows"`
+		}
+		err := doctypeRequest(r.db, http.MethodPost, r.view.Doctype, path, r.req, &res)
+		if err != nil {
+			return false, err
+		}
+		if r.cursor != nil {
+			r.cursor = r.cursor.updateFrom(res.Rows)
+		}
+		r.rows = res.Rows
+	}
+	r.index++
+	return r.index >= len(r.rows), nil
+}
+
+func (r *ViewRows) NextAndScanDoc(v interface{}) (bool, error) {
+	done, err := r.Next()
+	if err != nil {
+		return false, err
+	}
+	if done {
+		return false, nil
+	}
+	if err = r.ScanDoc(v); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *ViewRows) ScanDoc(v interface{}) error {
+	return json.Unmarshal(r.rows[r.index].Doc, &v)
+}
+
+func (r *ViewRows) ScanValue(v interface{}) error {
+	return json.Unmarshal(r.rows[r.index].Value, &v)
+}
+
+func (r *ViewRows) ScanKey(v interface{}) error {
+	return json.Unmarshal(r.rows[r.index].Key, &v)
+}
+
+// ID returns the ID of the current row.
+func (r *ViewRows) ID() string {
+	return r.rows[r.index].ID
+}
+
 // FindDocs returns all documents matching the passed FindRequest
 // documents will be unmarshalled in the provided results slice.
-func FindDocs(db Database, doctype string, req *FindRequest, results interface{}) error {
-	return FindDocsRaw(db, doctype, req, results)
+func FindDocs(db Database, doctype string, opts *FindRequest) *FindDocsRows {
+	if opts.Limit == 0 {
+		opts.Limit = 100
+	}
+	return FindDocsRaw(db, doctype, opts)
 }
 
 // FindDocsRaw find documents
-// TODO: pagination
-func FindDocsRaw(db Database, doctype string, req interface{}, results interface{}) error {
-	url := makeDBName(db, doctype) + "/_find"
-	// prepare a structure to receive the results
-	var response findResponse
-	err := makeRequest(db, "POST", url, &req, &response)
-	if err != nil {
-		if isIndexError(err) {
-			jsonReq, errm := json.Marshal(req)
-			if errm != nil {
-				return err
-			}
-			errc := err.(*Error)
-			errc.Reason += fmt.Sprintf(" (original req: %s)", string(jsonReq))
-			return errc
+func FindDocsRaw(db Database, doctype string, opts interface{}) *FindDocsRows {
+	return &FindDocsRows{
+		index:   -1,
+		db:      db,
+		doctype: doctype,
+		opts:    opts,
+	}
+}
+
+type FindDocsRows struct {
+	index   int
+	docs    []json.RawMessage
+	db      Database
+	doctype string
+	opts    interface{}
+}
+
+func (r *FindDocsRows) Next() (bool, error) {
+	if r.index == -1 {
+		var res struct {
+			Warning string            `json:"warning"`
+			Docs    []json.RawMessage `json:"docs"`
 		}
-		return err
-	}
-	if response.Warning != "" {
+		req := r.opts
+		err := doctypeRequest(r.db, http.MethodPost, r.doctype, "/_find", req, &res)
+		if err != nil {
+			return false, err
+		}
 		// Developer should not rely on unoptimized index.
-		return unoptimalError()
+		if res.Warning != "" {
+			return false, unoptimalError()
+		}
+		r.docs = res.Docs[:]
 	}
-	return json.Unmarshal(response.Docs, results)
+	r.index++
+	return r.index >= len(r.docs), nil
+}
+
+func (r *FindDocsRows) ScanDoc(v interface{}) error {
+	return json.Unmarshal(r.docs[r.index], &v)
+}
+
+func (r *FindDocsRows) NextAndScanDoc(v interface{}) (ok bool, err error) {
+	done, err := r.Next()
+	if err != nil {
+		return false, err
+	}
+	if done {
+		return false, nil
+	}
+	if err = r.ScanDoc(v); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // CountAllDocs returns the number of documents of the given doctype.
 func CountAllDocs(db Database, doctype string) (int, error) {
-	var response AllDocsResponse
-	url := makeDBName(db, doctype) + "/_all_docs?limit=0"
-	err := makeRequest(db, "GET", url, nil, &response)
-	if err != nil {
+	var res struct {
+		TotalRows int `json:"total_rows"`
+	}
+	path := "/_all_docs?limit=0"
+	if err := doctypeRequest(db, http.MethodGet, doctype, path, nil, &res); err != nil {
 		return 0, err
 	}
-	return response.TotalRows, nil
+	return res.TotalRows, nil
 }
 
-// GetAllDocs returns all documents of a specified doctype. It filters
-// out the possible _design document.
-func GetAllDocs(db Database, doctype string, req *AllDocsRequest, results interface{}) error {
-	v, err := query.Values(req)
-	if err != nil {
-		return err
-	}
-	v.Add("include_docs", "true")
-
-	var response AllDocsResponse
-	url := makeDBName(db, doctype) + "/_all_docs?" + v.Encode()
-	err = makeRequest(db, "GET", url, nil, &response)
-	if err != nil {
-		return err
-	}
-
-	var docs []json.RawMessage
-	for _, row := range response.Rows {
-		if !strings.HasPrefix(row.ID, "_design") {
-			docs = append(docs, row.Doc)
-		}
-	}
-	// TODO: better way to unmarshal returned data. For now we re-
-	// marshal the doc fields a a json array before unmarshalling it
-	// again...
-	data, err := json.Marshal(docs)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, results)
-}
-
-// ForeachDocs traverse all the documents from the given database with the
-// specified doctype and calls a function for each document.
-func ForeachDocs(db Database, doctype string, fn func([]byte) error) error {
-	var startKey string
+// GetAllDocs is used to go through the documents of the specified doctype on
+// the given database.
+func GetAllDocs(db Database, doctype string, options ...*AllDocsOptions) *AllDocsRows {
+	desc := false
 	limit := 100
-	for {
-		skip := 0
-		if startKey != "" {
-			skip = 1
+	if len(options) > 0 {
+		opts := options[0]
+		desc = opts.Descending
+		if opts.Limit > 0 {
+			limit = opts.Limit
 		}
-		req := &AllDocsRequest{
-			StartKeyDocID: startKey,
-			Skip:          skip,
-			Limit:         limit,
-		}
-		v, err := query.Values(req)
-		if err != nil {
-			return err
-		}
-		v.Add("include_docs", "true")
+	}
+	return &AllDocsRows{
+		index:   -1,
+		db:      db,
+		doctype: doctype,
+		limit:   limit,
+		desc:    desc,
+		fetch:   true,
+	}
+}
 
-		var res AllDocsResponse
-		url := makeDBName(db, doctype) + "/_all_docs?" + v.Encode()
-		err = makeRequest(db, "GET", url, nil, &res)
-		if err != nil {
-			return err
+// AllDocsRows can be used to iterate over the rows of a database associated
+// with a doctype.
+type AllDocsRows struct {
+	index    int
+	rows     []*row
+	db       Database
+	limit    int
+	desc     bool
+	fetch    bool
+	doctype  string
+	startKey string
+}
+
+// Next can be used to iterate on the next row. It returns a boolean stating
+// whether or not the iterator still has values.
+func (r *AllDocsRows) Next() (done bool, err error) {
+	r.index++
+
+	if r.index >= len(r.rows) {
+		if !r.fetch {
+			return true, nil
 		}
 
-		var count int
-		startKey = ""
-		for _, row := range res.Rows {
-			if !strings.HasPrefix(row.ID, "_design") {
-				if err = fn(row.Doc); err != nil {
-					return err
+		r.index = 0
+
+		for {
+			skip := 0
+			if r.startKey != "" {
+				skip = 1
+			}
+			req := &struct {
+				Descending    bool   `url:"descending,omitempty"`
+				Limit         int    `url:"limit,omitempty"`
+				Skip          int    `url:"skip,omitempty"`
+				StartKeyDocID string `url:"startkey_docid,omitempty"`
+			}{
+				Descending:    r.desc,
+				Limit:         r.limit,
+				Skip:          skip,
+				StartKeyDocID: r.startKey,
+			}
+
+			var v url.Values
+			v, err = query.Values(req)
+			if err != nil {
+				return false, err
+			}
+
+			v.Add("include_docs", "true")
+
+			var res struct {
+				Offset    int    `json:"offset"`
+				TotalRows int    `json:"total_rows"`
+				Rows      []*row `json:"rows"`
+			}
+			path := "/_all_docs?" + v.Encode()
+			if err = doctypeRequest(r.db, http.MethodGet, r.doctype, path, nil, &res); err != nil {
+				return false, err
+			}
+			if len(res.Rows) == 0 {
+				return true, nil
+			}
+			r.fetch = len(res.Rows) == r.limit
+			r.startKey = res.Rows[len(res.Rows)-1].ID
+			r.rows = res.Rows
+
+			// filter out _design documents
+			var designOffset int
+			for i := 0; i < len(r.rows); i++ {
+				if !strings.HasPrefix(r.rows[i].ID, "_design") {
+					designOffset = i
+					break
 				}
-				startKey = row.ID
-				count++
+			}
+			if designOffset > 0 {
+				r.rows = r.rows[designOffset:]
+			}
+
+			if len(r.rows) > 0 {
+				break
 			}
 		}
-		if count == 0 || len(res.Rows) < limit {
-			break
-		}
 	}
 
-	return nil
+	return false, nil
+}
+
+// ID returns the ID of the current row.
+func (r *AllDocsRows) ID() string {
+	return r.rows[r.index].ID
+}
+
+// ScanDoc will unmarshal the content of the document on the current row.
+func (r *AllDocsRows) ScanDoc(v interface{}) error {
+	return json.Unmarshal(r.rows[r.index].Doc, &v)
 }
 
 func validateDocID(id string) (string, error) {
@@ -822,32 +958,17 @@ func validateDocID(id string) (string, error) {
 	return id, nil
 }
 
-// ViewDesignDoc is the structure if a _design doc containing views
-type ViewDesignDoc struct {
-	ID    string           `json:"_id,omitempty"`
-	Rev   string           `json:"_rev,omitempty"`
-	Lang  string           `json:"language"`
-	Views map[string]*View `json:"views"`
-}
-
-// IndexCreationResponse is the response from couchdb when we create an Index
-type IndexCreationResponse struct {
-	Result string `json:"result,omitempty"`
-	Error  string `json:"error,omitempty"`
-	Reason string `json:"reason,omitempty"`
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name,omitempty"`
+type row struct {
+	ID    string          `json:"id"`
+	Doc   json.RawMessage `json:"doc"`
+	Value json.RawMessage `json:"value"`
+	Key   json.RawMessage `json:"key"`
 }
 
 type updateResponse struct {
 	ID  string `json:"id"`
 	Rev string `json:"rev"`
 	Ok  bool   `json:"ok"`
-}
-
-type findResponse struct {
-	Warning string          `json:"warning"`
-	Docs    json.RawMessage `json:"docs"`
 }
 
 // FindRequest is used to build a find request
@@ -860,84 +981,29 @@ type FindRequest struct {
 	Fields   []string      `json:"fields,omitempty"`
 }
 
-// AllDocsRequest is used to build a _all_docs request
-type AllDocsRequest struct {
-	Descending    bool   `url:"descending,omitempty"`
-	Limit         int    `url:"limit,omitempty"`
-	Skip          int    `url:"skip,omitempty"`
-	StartKey      string `url:"startkey,omitempty"`
-	StartKeyDocID string `url:"startkey_docid,omitempty"`
-	EndKey        string `url:"endkey,omitempty"`
-	EndKeyDocID   string `url:"endkey_docid,omitempty"`
-}
-
-// AllDocsResponse is the response we receive from an _all_docs request
-type AllDocsResponse struct {
-	Offset    int `json:"offset"`
-	TotalRows int `json:"total_rows"`
-	Rows      []struct {
-		ID  string          `json:"id"`
-		Doc json.RawMessage `json:"doc"`
-	} `json:"rows"`
+// AllDocsOptions is used as options for GetAllDocs method
+type AllDocsOptions struct {
+	Descending bool
+	Limit      int
 }
 
 // ViewRequest are all params that can be passed to a view
 // It can be encoded either as a POST-json or a GET-url.
 type ViewRequest struct {
-	Key      interface{} `json:"key,omitempty" url:"key,omitempty"`
-	StartKey interface{} `json:"start_key,omitempty" url:"start_key,omitempty"`
-	EndKey   interface{} `json:"end_key,omitempty" url:"end_key,omitempty"`
+	Key      interface{}   `json:"key,omitempty"`
+	Keys     []interface{} `json:"keys,omitempty"`
+	StartKey interface{}   `json:"start_key,omitempty"`
+	EndKey   interface{}   `json:"end_key,omitempty"`
 
-	StartKeyDocID string `json:"startkey_docid,omitempty" url:"startkey_docid,omitempty"`
-	EndKeyDocID   string `json:"endkey_docid,omitempty" url:"endkey_docid,omitempty"`
+	StartKeyDocID string `json:"startkey_docid,omitempty"`
+	EndKeyDocID   string `json:"endkey_docid,omitempty"`
 
-	// Keys cannot be used in url mode
-	Keys []interface{} `json:"keys,omitempty" url:"-"`
-
-	Limit       int  `json:"limit,omitempty" url:"limit,omitempty"`
-	Skip        int  `json:"skip,omitempty" url:"skip,omitempty"`
-	Descending  bool `json:"descending,omitempty" url:"descending,omitempty"`
-	IncludeDocs bool `json:"include_docs,omitempty" url:"include_docs,omitempty"`
-
-	InclusiveEnd bool `json:"inclusive_end,omitempty" url:"inclusive_end,omitempty"`
-
-	Reduce     bool `json:"reduce" url:"reduce"`
-	Group      bool `json:"group" url:"group"`
-	GroupLevel int  `json:"group_level,omitempty" url:"group_level,omitempty"`
-}
-
-// ViewResponseRow is a row in a ViewResponse
-type ViewResponseRow struct {
-	ID    string          `json:"id"`
-	Key   interface{}     `json:"key"`
-	Value interface{}     `json:"value"`
-	Doc   json.RawMessage `json:"doc"`
-}
-
-// ViewResponse is the response we receive when executing a view
-type ViewResponse struct {
-	Total int                `json:"total_rows"`
-	Rows  []*ViewResponseRow `json:"rows"`
-}
-
-// DBStatusResponse is the response from DBStatus
-type DBStatusResponse struct {
-	DBName    string `json:"db_name"`
-	UpdateSeq string `json:"update_seq"`
-	Sizes     struct {
-		File     int `json:"file"`
-		External int `json:"external"`
-		Active   int `json:"active"`
-	} `json:"sizes"`
-	PurgeSeq int `json:"purge_seq"`
-	Other    struct {
-		DataSize int `json:"data_size"`
-	} `json:"other"`
-	DocDelCount       int    `json:"doc_del_count"`
-	DocCount          int    `json:"doc_count"`
-	DiskSize          int    `json:"disk_size"`
-	DiskFormatVersion int    `json:"disk_format_version"`
-	DataSize          int    `json:"data_size"`
-	CompactRunning    bool   `json:"compact_running"`
-	InstanceStartTime string `json:"instance_start_time"`
+	Limit        int  `json:"limit"`
+	Skip         int  `json:"skip"`
+	Descending   bool `json:"descending"`
+	IncludeDocs  bool `json:"include_docs"`
+	InclusiveEnd bool `json:"inclusive_end"`
+	Reduce       bool `json:"reduce"`
+	Group        bool `json:"group"`
+	GroupLevel   int  `json:"group_level"`
 }

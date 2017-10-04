@@ -21,6 +21,11 @@ import (
 // ClientSecretLen is the number of random bytes used for generating the client secret
 const ClientSecretLen = 24 // #nosec
 
+var internalError = &ClientRegistrationError{
+	Code:  http.StatusInternalServerError,
+	Error: "internal_server_error",
+}
+
 // Client is a struct for OAuth2 client. Most of the fields are described in
 // the OAuth 2.0 Dynamic Client Registration Protocol. The exception is
 // `client_kind`, and it is an optional field.
@@ -93,12 +98,21 @@ func (c *Client) TransformIDAndRev() {
 // GetAll loads all the clients from the database, without the secrets
 func GetAll(i *instance.Instance) ([]*Client, error) {
 	var clients []*Client
-	req := &couchdb.AllDocsRequest{Limit: 100}
-	if err := couchdb.GetAllDocs(i, consts.OAuthClients, req, &clients); err != nil {
-		return nil, err
-	}
-	for _, client := range clients {
-		client.ClientSecret = ""
+	rows := couchdb.GetAllDocs(i, consts.OAuthClients)
+	for {
+		var c *Client
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		if err = rows.ScanDoc(&c); err != nil {
+			return nil, err
+		}
+		c.ClientSecret = ""
+		clients = append(clients, c)
 	}
 	return clients, nil
 }
@@ -166,27 +180,30 @@ func (c *Client) Create(i *instance.Instance) *ClientRegistrationError {
 		return err
 	}
 
-	var results []*Client
-	req := &couchdb.FindRequest{
-		UseIndex: "by-client-name",
-		Selector: mango.StartWith("client_name", c.ClientName),
-	}
-	err := couchdb.FindDocs(i, consts.OAuthClients, req, &results)
-	if err != nil && !couchdb.IsNoDatabaseError(err) {
-		return &ClientRegistrationError{
-			Code:  http.StatusInternalServerError,
-			Error: "internal_server_error",
-		}
-	}
-
-	// Find the correct suffix to apply to the client name in case it is already
-	// used.
-	suffix := ""
-	if len(results) > 0 {
-		n := 1
-		found := false
+	{
+		// Find the correct suffix to apply to the client name in case it is already
+		// used.
+		suffix := ""
 		prefix := c.ClientName + "-"
-		for _, r := range results {
+		found := false
+		opts := &couchdb.FindRequest{
+			UseIndex: "by-client-name",
+			Selector: mango.StartWith("client_name", c.ClientName),
+		}
+		rows := couchdb.FindDocs(i, consts.OAuthClients, opts)
+		n := 1
+		for {
+			done, err := rows.Next()
+			if done || couchdb.IsNoDatabaseError(err) {
+				break
+			}
+			if err != nil {
+				return internalError
+			}
+			var r *Client
+			if err = rows.ScanDoc(&r); err != nil {
+				return internalError
+			}
 			name := r.ClientName
 			if name == c.ClientName {
 				found = true
@@ -204,9 +221,9 @@ func (c *Client) Create(i *instance.Instance) *ClientRegistrationError {
 		if found {
 			suffix = strconv.Itoa(n + 1)
 		}
-	}
-	if suffix != "" {
-		c.ClientName = c.ClientName + "-" + suffix
+		if suffix != "" {
+			c.ClientName = c.ClientName + "-" + suffix
+		}
 	}
 
 	c.CouchID = ""
@@ -219,11 +236,9 @@ func (c *Client) Create(i *instance.Instance) *ClientRegistrationError {
 	c.GrantTypes = []string{"authorization_code", "refresh_token"}
 	c.ResponseTypes = []string{"code"}
 
-	if err = couchdb.CreateDoc(i, c); err != nil {
-		return &ClientRegistrationError{
-			Code:  http.StatusInternalServerError,
-			Error: "internal_server_error",
-		}
+	err := couchdb.CreateDoc(i, c)
+	if err != nil {
+		return internalError
 	}
 
 	c.RegistrationToken, err = crypto.NewJWT(i.OAuthSecret, jwt.StandardClaims{
@@ -234,10 +249,7 @@ func (c *Client) Create(i *instance.Instance) *ClientRegistrationError {
 	})
 	if err != nil {
 		i.Logger().Errorf("[oauth] Failed to create the registration access token: %s", err)
-		return &ClientRegistrationError{
-			Code:  http.StatusInternalServerError,
-			Error: "internal_server_error",
-		}
+		return internalError
 	}
 
 	c.TransformIDAndRev()
@@ -282,10 +294,7 @@ func (c *Client) Update(i *instance.Instance, old *Client) *ClientRegistrationEr
 	c.ResponseTypes = []string{"code"}
 
 	if err := couchdb.UpdateDoc(i, c); err != nil {
-		return &ClientRegistrationError{
-			Code:  http.StatusInternalServerError,
-			Error: "internal_server_error",
-		}
+		return internalError
 	}
 
 	c.TransformIDAndRev()
@@ -295,10 +304,7 @@ func (c *Client) Update(i *instance.Instance, old *Client) *ClientRegistrationEr
 // Delete is a function that unregister a client
 func (c *Client) Delete(i *instance.Instance) *ClientRegistrationError {
 	if err := couchdb.DeleteDoc(i, c); err != nil {
-		return &ClientRegistrationError{
-			Code:  http.StatusInternalServerError,
-			Error: "internal_server_error",
-		}
+		return internalError
 	}
 	return nil
 }

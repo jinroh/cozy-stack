@@ -290,10 +290,11 @@ func defineIndex(c echo.Context) error {
 		return err
 	}
 
-	result, err := couchdb.DefineIndexRaw(instance, doctype, &definitionRequest)
+	var result map[string]interface{}
+	err := couchdb.DefineIndexRaw(instance, doctype, definitionRequest, &result)
 	if couchdb.IsNoDatabaseError(err) {
 		if err = couchdb.CreateDB(instance, doctype); err == nil || couchdb.IsFileExists(err) {
-			result, err = couchdb.DefineIndexRaw(instance, doctype, &definitionRequest)
+			err = couchdb.DefineIndexRaw(instance, doctype, definitionRequest, &result)
 		}
 	}
 	if err != nil {
@@ -330,20 +331,28 @@ func findDocuments(c echo.Context) error {
 	// add 1 so we know if there is more.
 	findRequest["limit"] = limit + 1
 
-	var results []couchdb.JSONDoc
-	err := couchdb.FindDocsRaw(instance, doctype, &findRequest, &results)
-	if err != nil {
-		return err
+	var docs []json.RawMessage
+	rows := couchdb.FindDocsRaw(instance, doctype, findRequest)
+	for i := 0; i < int(limit); i++ {
+		done, err := rows.Next()
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		var j json.RawMessage
+		if err = rows.ScanDoc(&j); err != nil {
+			return err
+		}
+		docs = append(docs, j)
 	}
+	next, _ := rows.Next()
 
 	out := echo.Map{
-		"docs":  results,
+		"docs":  docs,
 		"limit": limit,
-		"next":  false,
-	}
-	if len(results) > int(limit) {
-		out["docs"] = results[:len(results)-1]
-		out["next"] = true
+		"next":  next,
 	}
 
 	return c.JSON(http.StatusOK, out)

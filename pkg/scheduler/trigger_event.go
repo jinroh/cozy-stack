@@ -115,7 +115,7 @@ func eventMatchPermission(e *realtime.Event, rule *permissions.Rule) bool {
 
 			for _, value := range rule.Values {
 				var dir vfs.DirDoc
-				db := couchdb.SimpleDatabasePrefix(e.Domain)
+				db := couchdb.NewDatabase(e.Domain)
 				if err := couchdb.GetDoc(db, consts.Files, value, &dir); err != nil {
 					logger.WithNamespace("event-trigger").Error(err)
 					return false

@@ -144,7 +144,7 @@ func listSharedWithOthersPermissionsByDoctype(c echo.Context) error {
 		permissions.GetSharedWithOthersPermissionsByDoctype)
 }
 
-func listSharedPermissionsByDoctype(c echo.Context, route string, f func(couchdb.Database, string, couchdb.Cursor) ([]*permissions.Permission, error)) error {
+func listSharedPermissionsByDoctype(c echo.Context, route string, f func(couchdb.Database, string, couchdb.Cursor) ([]*permissions.Permission, couchdb.Cursor, error)) error {
 	ins := middlewares.GetInstance(c)
 	doctype := c.Param("doctype")
 	if doctype == "" {
@@ -166,19 +166,15 @@ func listSharedPermissionsByDoctype(c echo.Context, route string, f func(couchdb
 		return err
 	}
 
-	perms, err := f(ins, doctype, cursor)
+	perms, newCursor, err := f(ins, doctype, cursor)
 	if err != nil {
 		return err
 	}
 
 	links := &jsonapi.LinksList{}
-	if cursor.HasMore() {
-		params, err := jsonapi.PaginationCursorToParams(cursor)
-		if err != nil {
-			return err
-		}
+	if newCursor.HasMore() {
 		links.Next = fmt.Sprintf("/permissions/doctype/%s/%s?%s",
-			doctype, route, params.Encode())
+			doctype, route, newCursor.ToQueryParams().Encode())
 	}
 
 	out := make([]jsonapi.Object, len(perms))

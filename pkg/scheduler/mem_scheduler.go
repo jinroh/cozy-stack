@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -46,29 +45,40 @@ func (s *MemScheduler) Start(b jobs.Broker) error {
 	defer s.mu.Unlock()
 
 	var ts []*TriggerInfos
-	err := couchdb.ForeachDocs(couchdb.GlobalDB, consts.Instances, func(data []byte) error {
+	insts := couchdb.GetAllDocs(couchdb.GlobalDB, consts.Instances)
+	for {
 		var d struct {
 			Domain string `json:"domain"`
 		}
-		if err := json.Unmarshal(data, &d); err != nil {
+		done, err := insts.Next()
+		if done || couchdb.IsNoDatabaseError(err) {
+			break
+		}
+		if err != nil {
 			return err
 		}
-		db := couchdb.SimpleDatabasePrefix(d.Domain)
-		err := couchdb.ForeachDocs(db, consts.Triggers, func(data []byte) error {
+		if err = insts.ScanDoc(&d); err != nil {
+			return err
+		}
+		db := couchdb.NewDatabase(d.Domain)
+		if d.Domain == "" {
+			panic("BBB")
+		}
+		trigs := couchdb.GetAllDocs(db, consts.Triggers)
+		for {
 			var t *TriggerInfos
-			if err := json.Unmarshal(data, &t); err != nil {
+			done, err = trigs.Next()
+			if done || couchdb.IsNoDatabaseError(err) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if err = trigs.ScanDoc(&t); err != nil {
 				return err
 			}
 			ts = append(ts, t)
-			return nil
-		})
-		if err != nil && !couchdb.IsNoDatabaseError(err) {
-			return err
 		}
-		return nil
-	})
-	if err != nil && !couchdb.IsNoDatabaseError(err) {
-		return err
 	}
 
 	s.broker = b
@@ -104,7 +114,7 @@ func (s *MemScheduler) Shutdown(ctx context.Context) error {
 func (s *MemScheduler) Add(t Trigger) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	db := couchdb.SimpleDatabasePrefix(t.Infos().Domain)
+	db := couchdb.NewDatabase(t.Infos().Domain)
 	if err := couchdb.CreateDoc(db, t.Infos()); err != nil {
 		return err
 	}
@@ -135,7 +145,7 @@ func (s *MemScheduler) Delete(domain, id string) error {
 	}
 	delete(s.ts, id)
 	t.Unschedule()
-	db := couchdb.SimpleDatabasePrefix(t.Infos().Domain)
+	db := couchdb.NewDatabase(t.Infos().Domain)
 	return couchdb.DeleteDoc(db, t.Infos())
 }
 

@@ -72,20 +72,24 @@ func SharingUpdates(ctx *jobs.WorkerContext) error {
 	if err != nil {
 		return err
 	}
-	var res []sharings.Sharing
-	err = couchdb.FindDocs(i, consts.Sharings, &couchdb.FindRequest{
+	var sharing *sharings.Sharing
+	opts := &couchdb.FindRequest{
 		UseIndex: "by-sharing-id",
 		Selector: mango.Equal("sharing_id", sharingID),
-	}, &res)
+		Limit:    2,
+	}
+	rows := couchdb.FindDocs(i, consts.Sharings, opts)
+	ok, err := rows.NextAndScanDoc(&sharing)
 	if err != nil {
 		return err
 	}
-	if len(res) < 1 {
+	if !ok {
 		return ErrSharingDoesNotExist
-	} else if len(res) > 1 {
+	}
+	done, _ := rows.Next()
+	if !done {
 		return ErrSharingIDNotUnique
 	}
-	sharing := &res[0]
 
 	// One-Shot sharing do not propagate updates.
 	if sharing.SharingType == consts.OneShotSharing {

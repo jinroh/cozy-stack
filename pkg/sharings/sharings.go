@@ -251,20 +251,25 @@ func CreateSharing(instance *instance.Instance, params *CreateSharingParams, slu
 
 // FindSharing retrieves a sharing document gfrom its sharingID
 func FindSharing(db couchdb.Database, sharingID string) (*Sharing, error) {
-	var res []Sharing
-	err := couchdb.FindDocs(db, consts.Sharings, &couchdb.FindRequest{
+	opts := &couchdb.FindRequest{
 		UseIndex: "by-sharing-id",
 		Selector: mango.Equal("sharing_id", sharingID),
-	}, &res)
+		Limit:    2,
+	}
+	var res *Sharing
+	rows := couchdb.FindDocs(db, consts.Sharings, opts)
+	ok, err := rows.NextAndScanDoc(&res)
 	if err != nil {
 		return nil, err
 	}
-	if len(res) < 1 {
+	if !ok {
 		return nil, ErrSharingDoesNotExist
-	} else if len(res) > 1 {
+	}
+	done, _ := rows.Next()
+	if !done {
 		return nil, ErrSharingIDNotUnique
 	}
-	return &res[0], nil
+	return res, nil
 }
 
 // FindSharingRecipient retrieve a sharing recipient from its clientID and sharingID

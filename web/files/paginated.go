@@ -54,7 +54,7 @@ func dirData(c echo.Context, statusCode int, doc *vfs.DirDoc) error {
 		count--
 	}
 
-	children, err := fs.DirBatch(doc, cursor)
+	children, newCursor, err := fs.DirBatch(doc, cursor)
 	if err != nil {
 		return err
 	}
@@ -104,12 +104,8 @@ func dirData(c echo.Context, statusCode int, doc *vfs.DirDoc) error {
 	}
 
 	var links jsonapi.LinksList
-	if cursor.HasMore() {
-		params, err := jsonapi.PaginationCursorToParams(cursor)
-		if err != nil {
-			return err
-		}
-		next := "/files/" + doc.DocID + "/relationships/contents?" + params.Encode()
+	if newCursor.HasMore() {
+		next := "/files/" + doc.DocID + "/relationships/contents?" + newCursor.ToQueryParams().Encode()
 		rel["contents"].Links.Next = next
 	}
 
@@ -140,7 +136,7 @@ func dirDataList(c echo.Context, statusCode int, doc *vfs.DirDoc) error {
 		count--
 	}
 
-	children, err := fs.DirBatch(doc, cursor)
+	children, newCursor, err := fs.DirBatch(doc, cursor)
 	if err != nil {
 		return err
 	}
@@ -159,12 +155,8 @@ func dirDataList(c echo.Context, statusCode int, doc *vfs.DirDoc) error {
 	}
 
 	var links jsonapi.LinksList
-	if cursor.HasMore() {
-		params, err := jsonapi.PaginationCursorToParams(cursor)
-		if err != nil {
-			return err
-		}
-		next := c.Request().URL.Path + "?" + params.Encode()
+	if newCursor.HasMore() {
+		next := c.Request().URL.Path + "?" + newCursor.ToQueryParams().Encode()
 		links.Next = next
 	}
 

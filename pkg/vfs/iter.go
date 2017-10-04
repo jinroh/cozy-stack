@@ -71,18 +71,31 @@ func (i *iter) fetch() error {
 	i.index = 0
 	i.list = i.list[:0]
 
-	req := &couchdb.FindRequest{
+	opts := &couchdb.FindRequest{
 		UseIndex: "dir-children",
 		Selector: i.sel,
 		Limit:    i.opt.ByFetch,
 		Skip:     i.offset,
 	}
-	err := couchdb.FindDocs(i.db, consts.Files, req, &i.list)
-	if err != nil {
-		return err
+	rows := couchdb.FindDocs(i.db, consts.Files, opts)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		var doc *DirOrFileDoc
+		if err = rows.ScanDoc(&doc); err != nil {
+			return err
+		}
+		i.list = append(i.list, doc)
 	}
+
 	if len(i.list) == 0 {
 		return ErrIteratorDone
 	}
+
 	return nil
 }

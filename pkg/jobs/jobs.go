@@ -203,7 +203,7 @@ func (j *Job) Create() error {
 }
 
 func (j *Job) db() couchdb.Database {
-	return couchdb.SimpleDatabasePrefix(j.Domain)
+	return couchdb.NewDatabase(j.Domain)
 }
 
 // UnmarshalJSON implements json.Unmarshaler on Message. It should be retro-
@@ -255,7 +255,7 @@ func NewJob(req *JobRequest) *Job {
 // Get returns the informations about a job.
 func Get(domain, jobID string) (*Job, error) {
 	var job Job
-	db := couchdb.SimpleDatabasePrefix(domain)
+	db := couchdb.NewDatabase(domain)
 	if err := couchdb.GetDoc(db, consts.Jobs, jobID, &job); err != nil {
 		if couchdb.IsNotFoundError(err) {
 			return nil, ErrNotFoundJob
@@ -268,7 +268,7 @@ func Get(domain, jobID string) (*Job, error) {
 // GetQueuedJobs returns the list of jobs which states is "queued" or "running"
 func GetQueuedJobs(domain, workerType string) ([]*Job, error) {
 	var results []*Job
-	db := couchdb.SimpleDatabasePrefix(domain)
+	db := couchdb.NewDatabase(domain)
 	req := &couchdb.FindRequest{
 		UseIndex: "by-worker-and-state",
 		Selector: mango.And(
@@ -281,9 +281,20 @@ func GetQueuedJobs(domain, workerType string) ([]*Job, error) {
 		),
 		Limit: 200,
 	}
-	err := couchdb.FindDocs(db, consts.Jobs, req, &results)
-	if err != nil {
-		return nil, err
+	rows := couchdb.FindDocs(db, consts.Jobs, req)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		var j *Job
+		if err = rows.ScanDoc(&j); err != nil {
+			return nil, err
+		}
+		results = append(results, j)
 	}
 	return results, nil
 }

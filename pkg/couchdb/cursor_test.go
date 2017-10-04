@@ -1,6 +1,8 @@
 package couchdb
 
 import (
+	"encoding/json"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,7 +16,7 @@ func TestStartKeyCursor(t *testing.T) {
 
 	c1 := NewKeyCursor(10, []string{"A", "B"}, "last-result-id")
 
-	c1.ApplyTo(req1)
+	c1.applyTo(req1)
 	assert.Nil(t, req1.Key)
 	assert.Equal(t, []string{"A", "B"}, req1.StartKey)
 	assert.Equal(t, "last-result-id", req1.StartKeyDocID)
@@ -22,18 +24,16 @@ func TestStartKeyCursor(t *testing.T) {
 
 	c2 := NewKeyCursor(3, nil, "")
 
-	res := &ViewResponse{
-		Rows: []*ViewResponseRow{
-			{Key: []string{"A", "B"}, ID: "resultA"},
-			{Key: []string{"A", "B"}, ID: "resultB"},
-			{Key: []string{"A", "B"}, ID: "resultC"},
-			{Key: []string{"A", "B"}, ID: "resultD"},
-		},
+	rows := []*row{
+		{Key: json.RawMessage([]byte(`["A", "B"]`)), ID: "resultA"},
+		{Key: json.RawMessage([]byte(`["A", "B"]`)), ID: "resultB"},
+		{Key: json.RawMessage([]byte(`["A", "B"]`)), ID: "resultC"},
+		{Key: json.RawMessage([]byte(`["A", "B"]`)), ID: "resultD"},
 	}
 
-	c2.UpdateFrom(res)
-	assert.Len(t, res.Rows, 3)
-	assert.Equal(t, []string{"A", "B"}, c2.(*StartKeyCursor).NextKey)
-	assert.Equal(t, "resultD", c2.(*StartKeyCursor).NextDocID)
-
+	c3 := c2.updateFrom(rows)
+	assert.EqualValues(t, url.Values{
+		"page[limit]":  []string{"3"},
+		"page[cursor]": []string{`[["A","B"],"resultD"]`},
+	}, c3.ToQueryParams())
 }

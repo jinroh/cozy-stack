@@ -1,7 +1,6 @@
 package sharings
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/url"
 
@@ -65,55 +64,66 @@ func CreateOrUpdateRecipient(db couchdb.Database, doc *contacts.Contact) error {
 		return ErrRecipientBadParams
 	}
 
-	var res couchdb.ViewResponse
 	if len(doc.Email) > 0 {
-		err := couchdb.ExecView(db, consts.SharingRecipientView, &couchdb.ViewRequest{
+		req := &couchdb.ViewRequest{
 			Key:         []string{doc.Email[0].Address, "email"},
 			IncludeDocs: true,
 			Limit:       1,
-		}, &res)
-		if err == nil && len(res.Rows) > 0 {
-			if len(doc.Cozy) == 0 {
-				return json.Unmarshal(res.Rows[0].Doc, &doc)
-			}
-			cozy := doc.Cozy[0]
-			doc.Cozy = nil
-			if err = json.Unmarshal(res.Rows[0].Doc, &doc); err != nil {
-				return err
-			}
-			for _, c := range doc.Cozy {
-				if c.URL == cozy.URL {
-					return nil
-				}
-			}
-			doc.Cozy = append(doc.Cozy, cozy)
-			return couchdb.UpdateDoc(db, doc)
 		}
+		rows := couchdb.ExecView(db, consts.SharingRecipientView, req)
+		done, err := rows.Next()
+		if err != nil {
+			return nil
+		}
+		if done {
+			return nil
+		}
+		if len(doc.Cozy) == 0 {
+			return rows.ScanDoc(&doc)
+		}
+		cozy := doc.Cozy[0]
+		doc.Cozy = nil
+		if err = rows.ScanDoc(&doc); err != nil {
+			return err
+		}
+		for _, c := range doc.Cozy {
+			if c.URL == cozy.URL {
+				return nil
+			}
+		}
+		doc.Cozy = append(doc.Cozy, cozy)
+		return couchdb.UpdateDoc(db, doc)
 	}
 
 	if len(doc.Cozy) > 0 {
-		err := couchdb.ExecView(db, consts.SharingRecipientView, &couchdb.ViewRequest{
+		req := &couchdb.ViewRequest{
 			Key:         []string{doc.Cozy[0].URL, "cozy"},
 			IncludeDocs: true,
 			Limit:       1,
-		}, &res)
-		if err == nil && len(res.Rows) > 0 {
-			if len(doc.Email) == 0 {
-				return json.Unmarshal(res.Rows[0].Doc, &doc)
-			}
-			email := doc.Email[0]
-			doc.Email = nil
-			if err = json.Unmarshal(res.Rows[0].Doc, &doc); err != nil {
-				return err
-			}
-			for _, e := range doc.Email {
-				if e.Address == email.Address {
-					return nil
-				}
-			}
-			doc.Email = append(doc.Email, email)
-			return couchdb.UpdateDoc(db, doc)
 		}
+		rows := couchdb.ExecView(db, consts.SharingRecipientView, req)
+		done, err := rows.Next()
+		if err != nil {
+			return nil
+		}
+		if done {
+			return nil
+		}
+		if len(doc.Email) == 0 {
+			return rows.ScanDoc(&doc)
+		}
+		email := doc.Email[0]
+		doc.Email = nil
+		if err = rows.ScanDoc(&doc); err != nil {
+			return err
+		}
+		for _, e := range doc.Email {
+			if e.Address == email.Address {
+				return nil
+			}
+		}
+		doc.Email = append(doc.Email, email)
+		return couchdb.UpdateDoc(db, doc)
 	}
 
 	return couchdb.CreateDoc(db, doc)

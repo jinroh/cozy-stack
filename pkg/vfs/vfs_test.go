@@ -766,7 +766,7 @@ func TestCreateFileTooBig(t *testing.T) {
 func TestMain(m *testing.M) {
 	config.UseTestFile()
 
-	check, err := checkup.HTTPChecker{URL: config.CouchURL().String()}.Check()
+	check, err := checkup.HTTPChecker{URL: config.CouchURL("/")}.Check()
 	if err != nil || check.Status() != checkup.Healthy {
 		fmt.Println("This test need couchdb to run.")
 		os.Exit(1)
@@ -798,7 +798,7 @@ func makeAferoFS() (vfs.VFS, func(), error) {
 		return nil, nil, errors.New("could not create temporary directory")
 	}
 
-	db := couchdb.SimpleDatabasePrefix("io.cozy.vfs.test")
+	db := couchdb.NewDatabase("io.cozy.vfs.test")
 	index := vfs.NewCouchdbIndexer(db)
 	aferoFs, err := vfsafero.New(index, &diskImpl{}, lock.ReadWrite("io.cozy.vfs.test"),
 		&url.URL{Scheme: "file", Host: "localhost", Path: tempdir}, "io.cozy.vfs.test")
@@ -832,7 +832,7 @@ func makeAferoFS() (vfs.VFS, func(), error) {
 }
 
 func makeSwiftFS() (vfs.VFS, func(), error) {
-	db := couchdb.SimpleDatabasePrefix("io.cozy.vfs.test")
+	db := couchdb.NewDatabase("io.cozy.vfs.test")
 	index := vfs.NewCouchdbIndexer(db)
 	swiftSrv, err := swifttest.NewSwiftServer("localhost")
 	if err != nil {

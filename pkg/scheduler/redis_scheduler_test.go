@@ -238,7 +238,7 @@ func TestRedisPollFromSchedKey(t *testing.T) {
 		WorkerType: "incr",
 		Message:    msg,
 	}
-	db := couchdb.SimpleDatabasePrefix(instanceName)
+	db := couchdb.NewDatabase(instanceName)
 	err = couchdb.CreateDoc(db, at)
 	assert.NoError(t, err)
 

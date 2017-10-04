@@ -3,7 +3,6 @@ package instance
 import (
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -653,23 +652,23 @@ func Get(domain string) (*Instance, error) {
 }
 
 func getFromCouch(domain string) (*Instance, error) {
-	var instances []*Instance
-	req := &couchdb.FindRequest{
+	opts := &couchdb.FindRequest{
 		UseIndex: "by-domain",
 		Selector: mango.Equal("domain", domain),
 		Limit:    1,
 	}
-	err := couchdb.FindDocs(couchdb.GlobalDB, consts.Instances, req, &instances)
-	if couchdb.IsNoDatabaseError(err) {
-		return nil, ErrNotFound
-	}
+	var i *Instance
+	rows := couchdb.FindDocs(couchdb.GlobalDB, consts.Instances, opts)
+	ok, err := rows.NextAndScanDoc(&i)
 	if err != nil {
+		if couchdb.IsNoDatabaseError(err) {
+			return nil, ErrNotFound
+		}
 		return nil, err
 	}
-	if len(instances) == 0 {
+	if !ok {
 		return nil, ErrNotFound
 	}
-	i := instances[0]
 	if err = i.makeVFS(); err != nil {
 		return nil, err
 	}
@@ -684,25 +683,44 @@ func (i *Instance) Translate(key string, vars ...interface{}) string {
 // List returns the list of declared instances.
 func List() ([]*Instance, error) {
 	var all []*Instance
-	err := ForeachInstances(func(doc *Instance) error {
+	rows := couchdb.GetAllDocs(couchdb.GlobalDB, consts.Instances)
+	for {
+		var doc *Instance
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		if err = rows.ScanDoc(&doc); err != nil {
+			return nil, err
+		}
 		all = append(all, doc)
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 	return all, nil
 }
 
 // ForeachInstances execute the given callback for each instances.
 func ForeachInstances(fn func(*Instance) error) error {
-	return couchdb.ForeachDocs(couchdb.GlobalDB, consts.Instances, func(data []byte) error {
+	rows := couchdb.GetAllDocs(couchdb.GlobalDB, consts.Instances)
+	for {
 		var doc *Instance
-		if err := json.Unmarshal(data, &doc); err != nil {
+		done, err := rows.Next()
+		if err != nil {
 			return err
 		}
-		return fn(doc)
-	})
+		if done {
+			break
+		}
+		if err = rows.ScanDoc(&doc); err != nil {
+			return err
+		}
+		if err = fn(doc); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Update is used to save changes made to an instance, it will invalidate
@@ -751,7 +769,7 @@ func DestroyWithoutHooks(domain string) error {
 		return err
 	}
 	defer getCache().Revoke(domain)
-	db := couchdb.SimpleDatabasePrefix(domain)
+	db := couchdb.NewDatabase(domain)
 	if err = couchdb.DeleteAllDBs(db); err != nil {
 		return err
 	}

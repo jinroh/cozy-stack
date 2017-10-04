@@ -119,6 +119,7 @@ type Fs struct {
 type CouchDB struct {
 	Auth *url.Userinfo
 	URL  *url.URL
+	url  string
 }
 
 // Jobs contains the configuration values for the jobs and triggers synchronization
@@ -186,8 +187,13 @@ func AdminServerAddr() string {
 }
 
 // CouchURL returns the CouchDB string url
-func CouchURL() *url.URL {
-	return config.CouchDB.URL
+func CouchURL(path string) string {
+	return config.CouchDB.url + path
+}
+
+// CouchURLCopy return a copy of CouchDB url
+func CouchURLCopy() *url.URL {
+	return utils.CloneURL(config.CouchDB.URL)
 }
 
 // Client returns the redis.Client for a RedisConfig
@@ -286,9 +292,8 @@ func UseViper(v *viper.Viper) error {
 	if err != nil {
 		return err
 	}
-	if couchURL.Path == "" {
-		couchURL.Path = "/"
-	}
+	couchURL.Path = ""
+	couchURL.RawPath = ""
 
 	regs, err := makeRegistries(v)
 	if err != nil {
@@ -326,6 +331,7 @@ func UseViper(v *viper.Viper) error {
 		CouchDB: CouchDB{
 			Auth: couchAuth,
 			URL:  couchURL,
+			url:  couchURL.String(),
 		},
 		Jobs: Jobs{
 			Workers: v.GetInt("jobs.workers"),

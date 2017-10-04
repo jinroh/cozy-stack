@@ -132,7 +132,7 @@ var baseFS afero.Fs
 func TestMain(m *testing.M) {
 	config.UseTestFile()
 
-	check, err := checkup.HTTPChecker{URL: config.CouchURL().String()}.Check()
+	check, err := checkup.HTTPChecker{URL: config.CouchURL("/")}.Check()
 	if err != nil || check.Status() != checkup.Healthy {
 		fmt.Println("This test need couchdb to run.")
 		os.Exit(1)
@@ -153,7 +153,7 @@ func TestMain(m *testing.M) {
 		io.WriteString(w, manGen())
 	}))
 
-	db = couchdb.SimpleDatabasePrefix("apps-test")
+	db = couchdb.NewDatabase("apps-test")
 
 	err = couchdb.ResetDB(db, consts.Apps)
 	if err != nil {

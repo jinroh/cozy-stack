@@ -182,18 +182,28 @@ func TestLoginWithGoodPassphrase(t *testing.T) {
 		assert.Equal(t, cookies[0].Name, sessions.SessionCookieName)
 		assert.NotEmpty(t, cookies[0].Value)
 
-		var results []*sessions.LoginEntry
-		err = couchdb.GetAllDocs(
-			couchdb.SimpleDatabasePrefix(domain),
+		rows := couchdb.GetAllDocs(
+			couchdb.NewDatabase(domain),
 			consts.SessionsLogins,
-			&couchdb.AllDocsRequest{Limit: 100},
-			&results,
+			&couchdb.AllDocsOptions{Limit: 1},
 		)
-		assert.NoError(t, err)
-		assert.Equal(t, 1, len(results))
-		assert.Equal(t, "Go-http-client/1.1", results[0].UA)
-		assert.True(t, strings.HasPrefix(results[0].IP, "127.0.0.1:"))
-		assert.False(t, results[0].CreatedAt.IsZero())
+		l := 0
+		for {
+			var done bool
+			var result *sessions.LoginEntry
+			done, err = rows.Next()
+			assert.NoError(t, err)
+			if done {
+				break
+			}
+			err = rows.ScanDoc(&result)
+			assert.NoError(t, err)
+			assert.Equal(t, "Go-http-client/1.1", result.UA)
+			assert.True(t, strings.HasPrefix(result.IP, "127.0.0.1:"))
+			assert.False(t, result.CreatedAt.IsZero())
+			l++
+		}
+		assert.Equal(t, 1, l)
 	}
 }
 
@@ -857,15 +867,23 @@ func TestAuthorizeSuccess(t *testing.T) {
 	assert.NoError(t, err)
 	defer res.Body.Close()
 	if assert.Equal(t, "302 Found", res.Status) {
-		var results []oauth.AccessCode
-		req := &couchdb.AllDocsRequest{}
-		couchdb.GetAllDocs(testInstance, consts.OAuthAccessCodes, req, &results)
-		if assert.Len(t, results, 1) {
-			code = results[0].Code
+		rows := couchdb.GetAllDocs(testInstance, consts.OAuthAccessCodes)
+		l := 0
+		for {
+			var result oauth.AccessCode
+			done, err := rows.Next()
+			if done {
+				break
+			}
+			assert.NoError(t, err)
+			err = rows.ScanDoc(&result)
+			assert.NoError(t, err)
+			code = result.Code
 			expected := fmt.Sprintf("https://example.org/oauth/callback?access_code=%s&client_id=%s&state=123456#", code, clientID)
 			assert.Equal(t, expected, res.Header.Get("Location"))
-			assert.Equal(t, results[0].ClientID, clientID)
-			assert.Equal(t, results[0].Scope, "files:read")
+			assert.Equal(t, result.ClientID, clientID)
+			assert.Equal(t, result.Scope, "files:read")
+			l++
 		}
 	}
 }

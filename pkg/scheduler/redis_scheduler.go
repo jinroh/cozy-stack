@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -266,7 +265,7 @@ func (s *RedisScheduler) Poll(now int64) error {
 // its jobs
 func (s *RedisScheduler) Add(t Trigger) error {
 	infos := t.Infos()
-	db := couchdb.SimpleDatabasePrefix(infos.Domain)
+	db := couchdb.NewDatabase(infos.Domain)
 	if err := couchdb.CreateDoc(db, infos); err != nil {
 		return err
 	}
@@ -303,7 +302,7 @@ func (s *RedisScheduler) addToRedis(t Trigger, prev time.Time) error {
 // Get returns the trigger with the specified ID.
 func (s *RedisScheduler) Get(domain, id string) (Trigger, error) {
 	var infos TriggerInfos
-	db := couchdb.SimpleDatabasePrefix(domain)
+	db := couchdb.NewDatabase(domain)
 	if err := couchdb.GetDoc(db, consts.Triggers, id, &infos); err != nil {
 		if couchdb.IsNotFoundError(err) {
 			return nil, ErrNotFoundTrigger
@@ -324,7 +323,7 @@ func (s *RedisScheduler) Delete(domain, id string) error {
 }
 
 func (s *RedisScheduler) deleteTrigger(t Trigger) error {
-	db := couchdb.SimpleDatabasePrefix(t.Infos().Domain)
+	db := couchdb.NewDatabase(t.Infos().Domain)
 	if err := couchdb.DeleteDoc(db, t.Infos()); err != nil {
 		return err
 	}
@@ -344,20 +343,21 @@ func (s *RedisScheduler) deleteTrigger(t Trigger) error {
 // GetAll returns all the triggers for a domain, from couch.
 func (s *RedisScheduler) GetAll(domain string) ([]Trigger, error) {
 	var infos []*TriggerInfos
-	db := couchdb.SimpleDatabasePrefix(domain)
-	err := couchdb.ForeachDocs(db, consts.Triggers, func(data []byte) error {
+	db := couchdb.NewDatabase(domain)
+	rows := couchdb.GetAllDocs(db, consts.Triggers)
+	for {
 		var t *TriggerInfos
-		if err := json.Unmarshal(data, &t); err != nil {
-			return err
+		done, err := rows.Next()
+		if done || couchdb.IsNoDatabaseError(err) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err = rows.ScanDoc(&t); err != nil {
+			return nil, err
 		}
 		infos = append(infos, t)
-		return nil
-	})
-	if err != nil {
-		if couchdb.IsNoDatabaseError(err) {
-			return nil, nil
-		}
-		return nil, err
 	}
 	v := make([]Trigger, 0, len(infos))
 	for _, info := range infos {

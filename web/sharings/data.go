@@ -15,8 +15,7 @@ import (
 )
 
 func doctypeExists(ins *instance.Instance, doctype string) bool {
-	_, err := couchdb.DBStatus(ins, doctype)
-	return err == nil
+	return couchdb.DBStatus(ins, doctype, nil) == nil
 }
 
 // receiveDocument stores a shared document in the Cozy.

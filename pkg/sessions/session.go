@@ -1,7 +1,6 @@
 package sessions
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -179,8 +178,19 @@ func FromAppCookie(c echo.Context, i *instance.Instance, slug string) (*Session,
 // GetAll return all active sessions
 func GetAll(inst *instance.Instance) ([]*Session, error) {
 	var sessions []*Session
-	if err := couchdb.GetAllDocs(inst, consts.Sessions, nil, &sessions); err != nil {
-		return nil, err
+	rows := couchdb.GetAllDocs(inst, consts.Sessions)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		var s *Session
+		if err = rows.ScanDoc(&s); err != nil {
+			return nil, err
+		}
 	}
 	return sessions, nil
 }
@@ -241,16 +251,20 @@ func (s *Session) ToAppCookie(domain, slug string) (*http.Cookie, error) {
 // DeleteOthers will remove all sessions except the one given in parameter.
 func DeleteOthers(i *instance.Instance, selfSessionID string) error {
 	var sessions []*Session
-	err := couchdb.ForeachDocs(i, consts.Sessions, func(data []byte) error {
-		var s Session
-		if err := json.Unmarshal(data, &s); err != nil {
+	rows := couchdb.GetAllDocs(i, consts.Sessions)
+	for {
+		var session *Session
+		done, err := rows.Next()
+		if err != nil {
 			return err
 		}
-		sessions = append(sessions, &s)
-		return nil
-	})
-	if err != nil {
-		return err
+		if done {
+			break
+		}
+		if err = rows.ScanDoc(&session); err != nil {
+			return err
+		}
+		sessions = append(sessions, session)
 	}
 	for _, s := range sessions {
 		if s.ID() != selfSessionID {

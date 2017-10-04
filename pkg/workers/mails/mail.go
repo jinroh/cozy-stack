@@ -118,7 +118,7 @@ func SendMail(ctx *jobs.WorkerContext) error {
 
 func addressFromDomain(domain string) (*Address, error) {
 	// TODO: cleanup this settings fetching
-	db := couchdb.SimpleDatabasePrefix(domain)
+	db := couchdb.NewDatabase(domain)
 	doc := &couchdb.JSONDoc{}
 	err := couchdb.GetDoc(db, consts.Settings, consts.InstanceSettingsID, doc)
 	if err != nil {

@@ -29,15 +29,16 @@ func TestRemoteGET(t *testing.T) {
 	body, _ := ioutil.ReadAll(res.Body)
 	assert.Equal(t, `{"entities":`, string(body[:12]))
 
-	var results []map[string]interface{}
-	allReq := &couchdb.AllDocsRequest{
+	rows := couchdb.GetAllDocs(testInstance, consts.RemoteRequests, &couchdb.AllDocsOptions{
 		Descending: true,
 		Limit:      1,
-	}
-	err = couchdb.GetAllDocs(testInstance, consts.RemoteRequests, allReq, &results)
+	})
+	var logged map[string]interface{}
+	done, err := rows.Next()
+	assert.False(t, done)
 	assert.NoError(t, err)
-	assert.Len(t, results, 1)
-	logged := results[0]
+	err = rows.ScanDoc(&logged)
+	assert.NoError(t, err)
 	assert.Equal(t, "org.wikidata.entity", logged["doctype"].(string))
 	assert.Equal(t, "GET", logged["verb"].(string))
 	assert.Equal(t, "https://www.wikidata.org/wiki/Special:EntityData/Q42.json", logged["url"].(string))

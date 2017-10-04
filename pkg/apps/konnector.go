@@ -200,18 +200,22 @@ func GetKonnectorBySlug(db couchdb.Database, slug string) (*KonnManifest, error)
 }
 
 // ListKonnectors returns the list of installed konnectors applications.
-//
-// TODO: pagination
 func ListKonnectors(db couchdb.Database) ([]Manifest, error) {
-	var docs []*KonnManifest
-	req := &couchdb.AllDocsRequest{Limit: 100}
-	err := couchdb.GetAllDocs(db, consts.Konnectors, req, &docs)
-	if err != nil {
-		return nil, err
-	}
-	mans := make([]Manifest, len(docs))
-	for i, m := range docs {
-		mans[i] = m
+	var mans []Manifest
+	rows := couchdb.GetAllDocs(db, consts.Konnectors)
+	for {
+		var k *KonnManifest
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		if err = rows.ScanDoc(&k); err != nil {
+			return nil, err
+		}
+		mans = append(mans, Manifest(k))
 	}
 	return mans, nil
 }

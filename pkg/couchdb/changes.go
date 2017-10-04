@@ -3,6 +3,7 @@ package couchdb
 import (
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/google/go-querystring/query"
 )
@@ -132,12 +133,11 @@ func GetChanges(db Database, req *ChangesRequest) (*ChangesResponse, error) {
 	}
 
 	var response ChangesResponse
-	url := makeDBName(db, req.DocType) + "/_changes?" + v.Encode()
-	err = makeRequest(db, "GET", url, nil, &response)
-
+	path := "/_changes?" + v.Encode()
+	err = doctypeRequest(db, http.MethodGet, req.DocType, path, nil, &response)
 	if err != nil {
 		return nil, err
 	}
-	return &response, nil
 
+	return &response, nil
 }

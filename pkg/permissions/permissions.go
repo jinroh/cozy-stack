@@ -1,7 +1,6 @@
 package permissions
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -164,65 +163,51 @@ func GetForKonnector(db couchdb.Database, slug string) (*Permission, error) {
 }
 
 func getForApp(db couchdb.Database, permType, docType, slug string) (*Permission, error) {
-	var res []Permission
-	err := couchdb.FindDocs(db, consts.Permissions, &couchdb.FindRequest{
+	opts := &couchdb.FindRequest{
 		UseIndex: "by-source-and-type",
 		Selector: mango.And(
 			mango.Equal("type", permType),
 			mango.Equal("source_id", docType+"/"+slug),
 		),
 		Limit: 1,
-	}, &res)
+	}
+	var res *Permission
+	rows := couchdb.FindDocs(db, consts.Permissions, opts)
+	ok, err := rows.NextAndScanDoc(&res)
 	if err != nil {
 		// FIXME https://issues.apache.org/jira/browse/COUCHDB-3336
 		// With a cluster of couchdb, we can have a race condition where we
 		// query an index before it has been updated for an app that has
 		// just been created.
 		time.Sleep(1 * time.Second)
-		err = couchdb.FindDocs(db, consts.Permissions, &couchdb.FindRequest{
-			UseIndex: "by-source-and-type",
-			Selector: mango.And(
-				mango.Equal("type", permType),
-				mango.Equal("source_id", docType+"/"+slug),
-			),
-			Limit: 1,
-		}, &res)
+		rows = couchdb.FindDocs(db, consts.Permissions, opts)
+		ok, err = rows.NextAndScanDoc(&res)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if len(res) == 0 {
+	if !ok {
 		return nil, fmt.Errorf("no permission doc for %v", slug)
 	}
-	return &res[0], nil
+	return res, nil
 }
 
 // GetForShareCode retrieves the Permission doc for a given sharing code
 func GetForShareCode(db couchdb.Database, tokenCode string) (*Permission, error) {
-	var res couchdb.ViewResponse
-	err := couchdb.ExecView(db, consts.PermissionsShareByCView, &couchdb.ViewRequest{
+	rows := couchdb.ExecView(db, consts.PermissionsShareByCView, &couchdb.ViewRequest{
 		Key:         tokenCode,
 		IncludeDocs: true,
-	}, &res)
+		Limit:       1,
+	})
+	var doc *Permission
+	ok, err := rows.NextAndScanDoc(&doc)
 	if err != nil {
 		return nil, err
 	}
-
-	if len(res.Rows) == 0 {
+	if !ok {
 		return nil, fmt.Errorf("no permission doc for token %v", tokenCode)
 	}
-
-	if len(res.Rows) > 1 {
-		return nil, fmt.Errorf("Bad state : several permission docs for token %v", tokenCode)
-	}
-
-	var pdoc Permission
-	err = json.Unmarshal(res.Rows[0].Doc, &pdoc)
-	if err != nil {
-		return nil, err
-	}
-
-	return &pdoc, nil
+	return doc, nil
 }
 
 // CreateWebappSet creates a Permission doc for an app
@@ -349,19 +334,31 @@ func DestroyKonnector(db couchdb.Database, slug string) error {
 }
 
 func destroyApp(db couchdb.Database, docType, slug string) error {
-	var res []Permission
-	err := couchdb.FindDocs(db, consts.Permissions, &couchdb.FindRequest{
+	var res []*Permission
+	opts := &couchdb.FindRequest{
 		UseIndex: "by-source-and-type",
 		Selector: mango.And(
 			mango.Equal("source_id", docType+"/"+slug),
 			mango.Exists("type"),
 		),
-	}, &res)
-	if err != nil {
-		return err
+	}
+	rows := couchdb.FindDocs(db, consts.Permissions, opts)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		var p *Permission
+		if err = rows.ScanDoc(&p); err != nil {
+			return err
+		}
+		res = append(res, p)
 	}
 	for _, p := range res {
-		err := couchdb.DeleteDoc(db, &p)
+		err := couchdb.DeleteDoc(db, p)
 		if err != nil {
 			return err
 		}
@@ -372,32 +369,36 @@ func destroyApp(db couchdb.Database, docType, slug string) error {
 // GetPermissionsForIDs gets permissions for several IDs
 // returns for every id the combined allowed verbset
 func GetPermissionsForIDs(db couchdb.Database, doctype string, ids []string) (map[string]*VerbSet, error) {
-	var res struct {
-		Rows []struct {
-			ID    string   `json:"id"`
-			Key   []string `json:"key"`
-			Value *VerbSet `json:"value"`
-		} `json:"rows"`
-	}
-
 	keys := make([]interface{}, len(ids))
 	for i, id := range ids {
 		keys[i] = []string{doctype, "_id", id}
 	}
 
-	err := couchdb.ExecView(db, consts.PermissionsShareByDocView, &couchdb.ViewRequest{
+	rows := couchdb.ExecView(db, consts.PermissionsShareByDocView, &couchdb.ViewRequest{
 		Keys: keys,
-	}, &res)
-	if err != nil {
-		return nil, err
-	}
+	})
 
 	result := make(map[string]*VerbSet)
-	for _, row := range res.Rows {
-		if _, ok := result[row.Key[2]]; ok {
-			result[row.Key[2]].Merge(row.Value)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		var key []string
+		var val *VerbSet
+		if err = rows.ScanKey(&key); err != nil {
+			return nil, err
+		}
+		if err = rows.ScanValue(&val); err != nil {
+			return nil, err
+		}
+		if _, ok := result[key[2]]; ok {
+			result[key[2]].Merge(val)
 		} else {
-			result[row.Key[2]] = row.Value
+			result[key[2]] = val
 		}
 	}
 
@@ -406,35 +407,32 @@ func GetPermissionsForIDs(db couchdb.Database, doctype string, ids []string) (ma
 
 // GetPermissionsByType gets all share permissions for a given doctype.
 // The passed Cursor will be modified in place
-func GetPermissionsByType(db couchdb.Database, doctype string, cursor couchdb.Cursor) ([]*Permission, error) {
-
+func GetPermissionsByType(db couchdb.Database, doctype string, cursor couchdb.Cursor) ([]*Permission, couchdb.Cursor, error) {
 	var req = &couchdb.ViewRequest{
 		StartKey:    []string{doctype},
 		EndKey:      []string{doctype, couchdb.MaxString},
 		IncludeDocs: true,
 	}
 
-	cursor.ApplyTo(req)
-
-	var res couchdb.ViewResponse
-	err := couchdb.ExecView(db, consts.PermissionsShareByDocView, req, &res)
-	if err != nil {
-		return nil, err
-	}
-
-	cursor.UpdateFrom(&res)
-
-	result := make([]*Permission, len(res.Rows))
-	for i, row := range res.Rows {
-		var pdoc Permission
-		err := json.Unmarshal(row.Doc, &pdoc)
+	var result []*Permission
+	rows := couchdb.ExecView(db, consts.PermissionsShareByDocView, req)
+	rows.WithCursor(cursor)
+	for {
+		done, err := rows.Next()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		result[i] = &pdoc
+		if done {
+			break
+		}
+		var pdoc *Permission
+		if err := rows.ScanDoc(&pdoc); err != nil {
+			return nil, nil, err
+		}
+		result = append(result, pdoc)
 	}
 
-	return result, nil
+	return result, rows.NextCursor(), nil
 }
 
 // GetSharedWithMePermissionsByDoctype retrieves the permissions in all
@@ -442,7 +440,7 @@ func GetPermissionsByType(db couchdb.Database, doctype string, cursor couchdb.Cu
 // (i.e. owner is false).
 //
 // The cursor will be modified in place.
-func GetSharedWithMePermissionsByDoctype(db couchdb.Database, doctype string, cursor couchdb.Cursor) ([]*Permission, error) {
+func GetSharedWithMePermissionsByDoctype(db couchdb.Database, doctype string, cursor couchdb.Cursor) ([]*Permission, couchdb.Cursor, error) {
 	return getSharedWithPermissionsByDoctype(db, doctype, cursor, false)
 }
 
@@ -451,95 +449,86 @@ func GetSharedWithMePermissionsByDoctype(db couchdb.Database, doctype string, cu
 // owner is true).
 //
 // The cursor will be modified in place.
-func GetSharedWithOthersPermissionsByDoctype(db couchdb.Database, doctype string, cursor couchdb.Cursor) ([]*Permission, error) {
+func GetSharedWithOthersPermissionsByDoctype(db couchdb.Database, doctype string, cursor couchdb.Cursor) ([]*Permission, couchdb.Cursor, error) {
 	return getSharedWithPermissionsByDoctype(db, doctype, cursor, true)
 }
 
-func getSharedWithPermissionsByDoctype(db couchdb.Database, doctype string, cursor couchdb.Cursor, owner bool) ([]*Permission, error) {
+func getSharedWithPermissionsByDoctype(db couchdb.Database, doctype string, cursor couchdb.Cursor, owner bool) ([]*Permission, couchdb.Cursor, error) {
 	var req = &couchdb.ViewRequest{
-		StartKey:    [2]interface{}{doctype, owner},
-		EndKey:      [3]interface{}{doctype, owner, couchdb.MaxString},
+		StartKey:    []interface{}{doctype, owner},
+		EndKey:      []interface{}{doctype, owner, couchdb.MaxString},
 		IncludeDocs: false,
 	}
 
-	cursor.ApplyTo(req)
+	var result []*Permission
+	rows := couchdb.ExecView(db, consts.SharedWithPermissionsView, req)
+	rows.WithCursor(cursor)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return nil, nil, err
+		}
+		if done {
+			break
+		}
 
-	var res couchdb.ViewResponse
-	err := couchdb.ExecView(db, consts.SharedWithPermissionsView, req, &res)
-	if err != nil {
-		return nil, err
-	}
-
-	cursor.UpdateFrom(&res)
-
-	result := make([]*Permission, len(res.Rows))
-
-	// The rows have the following format:
-	// "id": "_id", "key": [type, owner, sharing_id], "value": [rule]
-	// see consts/views.go and the view "SharedWithPermissionView"
-	for i, row := range res.Rows {
-		keys := row.Key.([]interface{})
+		// The rows have the following format:
+		// "id": "_id", "key": [type, owner, sharing_id], "value": [rule]
+		// see consts/views.go and the view "SharedWithPermissionView"
+		var keys []string
+		if err = rows.ScanKey(&keys); err != nil || len(keys) < 2 {
+			return nil, nil, err
+		}
 
 		var rule Rule
-		rule.Verbs = VerbSet{} // needed for Merge
+		var val struct {
+			Description string   `json:"description"`
+			Selector    string   `json:"selector"`
+			Type        string   `json:"type"`
+			Values      []string `json:"values"`
+			Verbs       []string `json:"verbs"`
+		}
+		if err = rows.ScanValue(&val); err != nil {
+			return nil, nil, err
+		}
+		rule.Description = val.Description
+		rule.Selector = val.Selector
+		rule.Type = val.Type
+		rule.Values = val.Values
 
 		// Since we didn't include the Sharing document (it contains all the
 		// permissions, possibly more than what where are interested in),
 		// we have to manually parse the rule.
-		mRule := row.Value.(map[string]interface{})
-		for field := range mRule {
-			switch field {
-			case "description":
-				rule.Description = mRule[field].(string)
-			case "selector":
-				rule.Selector = mRule[field].(string)
-			case "type":
-				rule.Type = mRule[field].(string)
-			case "values":
-				values := mRule[field].([]interface{})
-				rule.Values = make([]string, len(values))
-				for i, value := range values {
-					rule.Values[i] = value.(string)
-				}
-			case "verbs":
-				verbs := mRule[field].([]interface{})
-				if len(verbs) == 0 {
-					rule.Verbs = ALL
+		if len(val.Verbs) == 0 {
+			rule.Verbs = ALL
+		} else {
+			rule.Verbs = VerbSet{}
+			for _, verbStr := range val.Verbs {
+				var verb Verb
+				switch verbStr {
+				case "GET":
+					verb = GET
+				case "POST":
+					verb = POST
+				case "PUT":
+					verb = PUT
+				case "PATCH":
+					verb = PATCH
+				case "DELETE":
+					verb = DELETE
+				default:
 					continue
 				}
-				for _, verbStr := range verbs {
-					var verb Verb
-					switch verbStr.(string) {
-					case "GET":
-						verb = GET
-					case "POST":
-						verb = POST
-					case "PUT":
-						verb = PUT
-					case "PATCH":
-						verb = PATCH
-					case "DELETE":
-						verb = DELETE
-					default:
-						continue
-					}
-
-					rule.Verbs.Merge(&VerbSet{
-						verb: struct{}{},
-					})
-				}
-			default:
-				continue
+				rule.Verbs.Merge(&VerbSet{verb: struct{}{}})
 			}
 		}
 
-		pdoc := &Permission{
+		result = append(result, &Permission{
 			Type:        consts.Sharings,
-			SourceID:    keys[2].(string),
+			SourceID:    keys[2],
 			Permissions: Set{rule},
-		}
-		result[i] = pdoc
+		})
 	}
 
-	return result, nil
+	return result, rows.NextCursor(), nil
 }

@@ -138,8 +138,17 @@ func TestInstanceHasIndexes(t *testing.T) {
 	var results []*vfs.DirDoc
 	prefix := getDB(t, "test.cozycloud.cc")
 	req := &couchdb.FindRequest{Selector: mango.Equal("path", "/")}
-	err := couchdb.FindDocs(prefix, consts.Files, req, &results)
-	assert.NoError(t, err)
+	rows := couchdb.FindDocs(prefix, consts.Files, req)
+	for {
+		done, err := rows.Next()
+		assert.NoError(t, err)
+		if done {
+			break
+		}
+		var d *vfs.DirDoc
+		assert.NoError(t, rows.ScanDoc(&d))
+		results = append(results, d)
+	}
 	assert.Len(t, results, 1)
 }
 
@@ -370,7 +379,7 @@ func TestInstanceDestroy(t *testing.T) {
 func TestMain(m *testing.M) {
 	config.UseTestFile()
 
-	db, err := checkup.HTTPChecker{URL: config.CouchURL().String()}.Check()
+	db, err := checkup.HTTPChecker{URL: config.CouchURL("/")}.Check()
 	if err != nil || db.Status() != checkup.Healthy {
 		fmt.Println("This test need couchdb to run.")
 		os.Exit(1)

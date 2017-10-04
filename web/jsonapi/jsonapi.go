@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 
 	"github.com/cozy/cozy-stack/pkg/couchdb"
@@ -204,40 +203,8 @@ func BindRelations(req *http.Request) ([]couchdb.DocReference, error) {
 	return out, nil
 }
 
-// PaginationCursorToParams transforms a Cursor into url.Values
-// the url.Values contains only keys page[limit] & page[cursor]
-// if the cursor is Done, the values will be empty.
-func PaginationCursorToParams(cursor couchdb.Cursor) (url.Values, error) {
-
-	v := url.Values{}
-
-	if !cursor.HasMore() {
-		return v, nil
-	}
-
-	switch cursor.(type) {
-	case *couchdb.StartKeyCursor:
-		skc := cursor.(*couchdb.StartKeyCursor)
-		cursorObj := []interface{}{skc.NextKey, skc.NextDocID}
-		cursorBytes, err := json.Marshal(cursorObj)
-		if err != nil {
-			return nil, err
-		}
-		v.Set("page[limit]", strconv.Itoa(skc.Limit))
-		v.Set("page[cursor]", string(cursorBytes))
-
-	case *couchdb.SkipCursor:
-		sc := cursor.(*couchdb.SkipCursor)
-		v.Set("page[limit]", strconv.Itoa(sc.Limit))
-		v.Set("page[skip]", strconv.Itoa(sc.Skip))
-	}
-
-	return v, nil
-}
-
 // ExtractPaginationCursor creates a Cursor from context Query.
 func ExtractPaginationCursor(c echo.Context, defaultLimit int) (couchdb.Cursor, error) {
-
 	var limit int
 
 	if limitString := c.QueryParam("page[limit]"); limitString != "" {

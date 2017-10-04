@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 // This file contains error handling code for couchdb request
@@ -132,14 +131,6 @@ func IsConflictError(err error) bool {
 		return false
 	}
 	return couchErr.StatusCode == http.StatusConflict
-}
-
-func isIndexError(err error) bool {
-	couchErr, isCouchErr := IsCouchError(err)
-	if !isCouchErr {
-		return false
-	}
-	return strings.Contains(couchErr.Reason, "mango_idx")
 }
 
 func newRequestError(originalError error) error {

@@ -17,7 +17,7 @@ import (
 // Proxy generate a httputil.ReverseProxy which forwards the request to the
 // correct route.
 func Proxy(db Database, doctype, path string) *httputil.ReverseProxy {
-	couchURL := config.CouchURL()
+	couchURL := config.GetConfig().CouchDB.URL
 	couchAuth := config.GetConfig().CouchDB.Auth
 
 	director := func(req *http.Request) {

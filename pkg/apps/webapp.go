@@ -409,16 +409,24 @@ func GetWebappBySlug(db couchdb.Database, slug string) (*WebappManifest, error) 
 }
 
 // ListWebapps returns the list of installed web applications.
-//
-// TODO: pagination
 func ListWebapps(db couchdb.Database) ([]*WebappManifest, error) {
-	var docs []*WebappManifest
-	req := &couchdb.AllDocsRequest{Limit: 100}
-	err := couchdb.GetAllDocs(db, consts.Apps, req, &docs)
-	if err != nil {
-		return nil, err
+	var mans []*WebappManifest
+	rows := couchdb.GetAllDocs(db, consts.Apps)
+	for {
+		var w *WebappManifest
+		done, err := rows.Next()
+		if err != nil {
+			return nil, err
+		}
+		if done {
+			break
+		}
+		if err = rows.ScanDoc(&w); err != nil {
+			return nil, err
+		}
+		mans = append(mans, w)
 	}
-	return docs, nil
+	return mans, nil
 }
 
 var _ Manifest = &WebappManifest{}

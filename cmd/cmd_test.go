@@ -29,7 +29,7 @@ var testClient *client.Client
 func TestMain(m *testing.M) {
 	config.UseTestFile()
 
-	db, err := checkup.HTTPChecker{URL: config.CouchURL().String()}.Check()
+	db, err := checkup.HTTPChecker{URL: config.CouchURL("/")}.Check()
 	if err != nil || db.Status() != checkup.Healthy {
 		fmt.Println("This test need couchdb to run.")
 		os.Exit(1)

@@ -323,9 +323,17 @@ func cleanJobs(c echo.Context) error {
 	}
 	var ups []*jobs.Job
 	now := time.Now()
-	err := couchdb.ForeachDocs(instance, consts.Jobs, func(data []byte) error {
+	rows := couchdb.GetAllDocs(instance, consts.Jobs)
+	for {
 		var job *jobs.Job
-		if err := json.Unmarshal(data, &job); err != nil {
+		done, err := rows.Next()
+		if done || couchdb.IsNoDatabaseError(err) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if err = rows.ScanDoc(&job); err != nil {
 			return err
 		}
 		if job.State == jobs.Running || job.State == jobs.Queued {
@@ -333,10 +341,6 @@ func cleanJobs(c echo.Context) error {
 				ups = append(ups, job)
 			}
 		}
-		return nil
-	})
-	if err != nil && !couchdb.IsNoDatabaseError(err) {
-		return err
 	}
 	var errf error
 	for _, j := range ups {

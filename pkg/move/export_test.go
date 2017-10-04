@@ -138,11 +138,18 @@ func TestImport(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, photo.ReferencedBy)
 
-	var results []map[string]interface{}
-	err = couchdb.GetAllDocs(testdb, consts.PhotosAlbums, &couchdb.AllDocsRequest{}, &results)
-	assert.NoError(t, err)
-
-	for _, val := range results {
+	rows := couchdb.GetAllDocs(testdb, consts.PhotosAlbums)
+	for {
+		var val map[string]interface{}
+		var done bool
+		done, err = rows.Next()
+		assert.NoError(t, err)
+		if done {
+			break
+		}
+		assert.NoError(t, err)
+		err = rows.ScanDoc(&val)
+		assert.NoError(t, err)
 		if val["_id"] == photo.ReferencedBy[0].ID {
 			assert.Equal(t, "albumTest", val["name"])
 		}
@@ -158,7 +165,7 @@ func TestMain(m *testing.M) {
 
 	setup := testutils.NewSetup(m, "export_test")
 	inst = setup.GetTestInstance()
-	testdb = couchdb.SimpleDatabasePrefix(inst.Domain)
+	testdb = couchdb.NewDatabase(inst.Domain)
 
 	os.Exit(setup.Run())
 }

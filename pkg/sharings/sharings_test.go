@@ -35,7 +35,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var TestPrefix = couchdb.SimpleDatabasePrefix("couchdb-tests")
+var TestPrefix = couchdb.NewDatabase("couchdb-tests")
 var domainSharer = "test-sharing.sparta"
 var domainRecipient = "test-sharing.xerxes"
 

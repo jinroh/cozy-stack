@@ -161,7 +161,7 @@ type Indexer interface {
 	DirIterator(doc *DirDoc, opts *IteratorOptions) DirIterator
 
 	// DirBatch returns a batch of documents
-	DirBatch(*DirDoc, couchdb.Cursor) ([]DirOrFileDoc, error)
+	DirBatch(*DirDoc, couchdb.Cursor) ([]*DirOrFileDoc, couchdb.Cursor, error)
 	DirLength(*DirDoc) (int, error)
 	DirChildExists(dirID, filename string) (bool, error)
 }

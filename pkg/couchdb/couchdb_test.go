@@ -22,7 +22,7 @@ func TestErrors(t *testing.T) {
 
 const TestDoctype = "io.cozy.testobject"
 
-var TestPrefix = SimpleDatabasePrefix("couchdb-tests")
+var TestPrefix = NewDatabase("couchdb-tests")
 var receivedEventsMutex sync.Mutex
 var receivedEvents map[string]struct{}
 
@@ -127,12 +127,22 @@ func TestGetAllDocs(t *testing.T) {
 	CreateDoc(TestPrefix, doc2)
 
 	var results []*testDoc
-	err := GetAllDocs(TestPrefix, TestDoctype, &AllDocsRequest{Limit: 2}, &results)
-	if assert.NoError(t, err) {
-		assert.Len(t, results, 2)
-		assert.Equal(t, results[0].Test, "all_1")
-		assert.Equal(t, results[1].Test, "all_2")
+	rows := GetAllDocs(TestPrefix, TestDoctype)
+	for {
+		var result *testDoc
+		done, err := rows.Next()
+		if done {
+			break
+		}
+		assert.NoError(t, err)
+		err = rows.ScanDoc(&result)
+		assert.NoError(t, err)
+		results = append(results, result)
 	}
+
+	assert.Len(t, results, 2)
+	assert.Equal(t, results[0].Test, "all_1")
+	assert.Equal(t, results[1].Test, "all_2")
 }
 
 func TestBulkUpdateDocs(t *testing.T) {
@@ -142,8 +152,19 @@ func TestBulkUpdateDocs(t *testing.T) {
 	CreateDoc(TestPrefix, doc2)
 
 	var results []*testDoc
-	err := GetAllDocs(TestPrefix, TestDoctype, &AllDocsRequest{Limit: 2}, &results)
-	assert.NoError(t, err)
+	rows := GetAllDocs(TestPrefix, TestDoctype, &AllDocsOptions{Limit: 2})
+	for i := 0; i < 2; i++ {
+		var result *testDoc
+		done, err := rows.Next()
+		if done {
+			break
+		}
+		assert.NoError(t, err)
+		err = rows.ScanDoc(&result)
+		assert.NoError(t, err)
+		results = append(results, result)
+	}
+	assert.Len(t, results, 2)
 	results[0].Test = "after_1"
 	results[1].Test = "after_2"
 
@@ -151,15 +172,26 @@ func TestBulkUpdateDocs(t *testing.T) {
 	for i, doc := range results {
 		docs[i] = doc
 	}
-	err = BulkUpdateDocs(TestPrefix, results[0].DocType(), docs)
+
+	err := BulkUpdateDocs(TestPrefix, results[0].DocType(), docs)
 	assert.NoError(t, err)
 
-	err = GetAllDocs(TestPrefix, TestDoctype, &AllDocsRequest{Limit: 2}, &results)
-	if assert.NoError(t, err) {
-		assert.Len(t, results, 2)
-		assert.Equal(t, results[0].Test, "after_1")
-		assert.Equal(t, results[1].Test, "after_2")
+	results = make([]*testDoc, 0)
+	rows = GetAllDocs(TestPrefix, TestDoctype, &AllDocsOptions{Limit: 2})
+	for i := 0; i < 2; i++ {
+		var result *testDoc
+		done, err := rows.Next()
+		if done {
+			break
+		}
+		assert.NoError(t, err)
+		err = rows.ScanDoc(&result)
+		assert.NoError(t, err)
+		results = append(results, result)
 	}
+	assert.Len(t, results, 2)
+	assert.Equal(t, results[0].Test, "after_1")
+	assert.Equal(t, results[1].Test, "after_2")
 }
 
 func TestDefineIndex(t *testing.T) {
@@ -194,14 +226,26 @@ func TestQuery(t *testing.T) {
 		return
 	}
 	var out []testDoc
-	req := &FindRequest{
+	opts := &FindRequest{
 		UseIndex: "my-index",
 		Selector: mango.And(
 			mango.Equal("fieldA", "value2"),
 			mango.Exists("fieldB"),
 		),
 	}
-	err = FindDocs(TestPrefix, TestDoctype, req, &out)
+	rows := FindDocs(TestPrefix, TestDoctype, opts)
+	for {
+		var done bool
+		done, err = rows.Next()
+		assert.NoError(t, err)
+		if done {
+			break
+		}
+		var d testDoc
+		err = rows.ScanDoc(&d)
+		assert.NoError(t, err)
+		out = append(out, d)
+	}
 	if assert.NoError(t, err) {
 		assert.Len(t, out, 2, "should get 2 results")
 		// if fieldA are equaly, docs will be ordered by fieldB
@@ -211,21 +255,30 @@ func TestQuery(t *testing.T) {
 		assert.Equal(t, "value2", out[1].FieldA)
 	}
 
-	var out2 []testDoc
-	req2 := &FindRequest{
+	opts2 := &FindRequest{
 		UseIndex: "my-index",
 		Selector: mango.And(
 			mango.Equal("fieldA", "value1"),
 			mango.Between("fieldB", 10, 1000),
 		),
 	}
-	err = FindDocs(TestPrefix, TestDoctype, req2, &out2)
-	if assert.NoError(t, err) {
-		assert.Len(t, out, 2, "should get 2 results")
-		assert.Equal(t, doc1.ID(), out2[0].ID())
-		assert.Equal(t, doc5.ID(), out2[1].ID())
+	rows = FindDocs(TestPrefix, TestDoctype, opts2)
+	var out2 []testDoc
+	for {
+		var done bool
+		done, err = rows.Next()
+		assert.NoError(t, err)
+		if done {
+			break
+		}
+		var d testDoc
+		err = rows.ScanDoc(&d)
+		assert.NoError(t, err)
+		out2 = append(out2, d)
 	}
-
+	assert.Len(t, out2, 2, "should get 2 results")
+	assert.Equal(t, doc1.ID(), out2[0].ID())
+	assert.Equal(t, doc5.ID(), out2[1].ID())
 }
 
 func TestChangesSuccess(t *testing.T) {
@@ -284,7 +337,7 @@ func TestMain(m *testing.M) {
 	config.UseTestFile()
 
 	// First we make sure couchdb is started
-	db, err := checkup.HTTPChecker{URL: config.CouchURL().String()}.Check()
+	db, err := checkup.HTTPChecker{URL: config.CouchURL("/")}.Check()
 	if err != nil || db.Status() != checkup.Healthy {
 		fmt.Println("This test need couchdb to run.")
 		os.Exit(1)

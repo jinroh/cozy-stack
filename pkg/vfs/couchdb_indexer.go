@@ -1,7 +1,7 @@
 package vfs
 
 import (
-	"encoding/json"
+	"fmt"
 	"os"
 	"path"
 	"time"
@@ -54,22 +54,21 @@ func (c *couchdbIndexer) InitIndex() error {
 }
 
 func (c *couchdbIndexer) DiskUsage() (int64, error) {
-	var doc couchdb.ViewResponse
-	err := couchdb.ExecView(c.db, consts.DiskUsageView, &couchdb.ViewRequest{
+	rows := couchdb.ExecView(c.db, consts.DiskUsageView, &couchdb.ViewRequest{
 		Reduce: true,
-	}, &doc)
+	})
+	done, err := rows.Next()
 	if err != nil {
 		return 0, err
 	}
-	if len(doc.Rows) == 0 {
+	if done {
 		return 0, nil
 	}
-	// Reduce of _count should give us a number value
-	f64, ok := doc.Rows[0].Value.(float64)
-	if !ok {
+	var diskUsage int64
+	if err = rows.ScanValue(&diskUsage); err != nil {
 		return 0, ErrWrongCouchdbState
 	}
-	return int64(f64), nil
+	return diskUsage, nil
 }
 
 func (c *couchdbIndexer) CreateFileDoc(doc *FileDoc) error {
@@ -148,23 +147,30 @@ func (c *couchdbIndexer) DeleteDirDoc(doc *DirDoc) error {
 }
 
 func (c *couchdbIndexer) moveDir(oldpath, newpath string) error {
-	var children []*DirDoc
-	sel := mango.StartWith("path", oldpath+"/")
-	req := &couchdb.FindRequest{
+	opts := &couchdb.FindRequest{
 		UseIndex: "dir-by-path",
-		Selector: sel,
-	}
-	err := couchdb.FindDocs(c.db, consts.Files, req, &children)
-	if err != nil || len(children) == 0 {
-		return err
+		Selector: mango.StartWith("path", oldpath+"/"),
 	}
 
-	couchdocs := make([]interface{}, len(children))
-	for i, child := range children {
+	var docs []interface{}
+	rows := couchdb.FindDocs(c.db, consts.Files, opts)
+	for {
+		done, err := rows.Next()
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		var child *DirDoc
+		if err = rows.ScanDoc(&child); err != nil {
+			return err
+		}
 		child.Fullpath = path.Join(newpath, child.Fullpath[len(oldpath)+1:])
-		couchdocs[i] = child
+		docs = append(docs, child)
 	}
-	return couchdb.BulkUpdateDocs(c.db, consts.Files, couchdocs)
+
+	return couchdb.BulkUpdateDocs(c.db, consts.Files, docs)
 }
 
 func (c *couchdbIndexer) DirByID(fileID string) (*DirDoc, error) {
@@ -192,24 +198,24 @@ func (c *couchdbIndexer) DirByPath(name string) (*DirDoc, error) {
 	if !path.IsAbs(name) {
 		return nil, ErrNonAbsolutePath
 	}
-	var docs []*DirDoc
-	sel := mango.Equal("path", path.Clean(name))
-	req := &couchdb.FindRequest{
+	var doc *DirDoc
+	opts := &couchdb.FindRequest{
 		UseIndex: "dir-by-path",
-		Selector: sel,
+		Selector: mango.Equal("path", path.Clean(name)),
 		Limit:    1,
 	}
-	err := couchdb.FindDocs(c.db, consts.Files, req, &docs)
+	rows := couchdb.FindDocs(c.db, consts.Files, opts)
+	ok, err := rows.NextAndScanDoc(&doc)
 	if err != nil {
 		return nil, err
 	}
-	if len(docs) == 0 {
+	if !ok {
 		if name == "/" {
-			panic("Root directory is not in database")
+			return nil, fmt.Errorf("Root directory is not in database")
 		}
 		return nil, os.ErrNotExist
 	}
-	return docs[0], nil
+	return doc, nil
 }
 
 func (c *couchdbIndexer) FileByID(fileID string) (*FileDoc, error) {
@@ -237,21 +243,18 @@ func (c *couchdbIndexer) FileByPath(name string) (*FileDoc, error) {
 	}
 
 	// consts.FilesByParentView keys are [parentID, type, name]
-	var res couchdb.ViewResponse
-	err = couchdb.ExecView(c.db, consts.FilesByParentView, &couchdb.ViewRequest{
+	rows := couchdb.ExecView(c.db, consts.FilesByParentView, &couchdb.ViewRequest{
 		Key:         []string{parent.DocID, consts.FileType, path.Base(name)},
 		IncludeDocs: true,
-	}, &res)
+	})
+	var fdoc FileDoc
+	ok, err := rows.NextAndScanDoc(&fdoc)
 	if err != nil {
 		return nil, err
 	}
-
-	if len(res.Rows) == 0 {
+	if !ok {
 		return nil, os.ErrNotExist
 	}
-
-	var fdoc FileDoc
-	err = json.Unmarshal(res.Rows[0].Doc, &fdoc)
 	return &fdoc, err
 }
 
@@ -303,32 +306,32 @@ func (c *couchdbIndexer) DirIterator(doc *DirDoc, opts *IteratorOptions) DirIter
 	return NewIterator(c.db, doc, opts)
 }
 
-func (c *couchdbIndexer) DirBatch(doc *DirDoc, cursor couchdb.Cursor) ([]DirOrFileDoc, error) {
+func (c *couchdbIndexer) DirBatch(doc *DirDoc, cursor couchdb.Cursor) ([]*DirOrFileDoc, couchdb.Cursor, error) {
 	// consts.FilesByParentView keys are [parentID, type, name]
 	req := couchdb.ViewRequest{
 		StartKey:    []string{doc.DocID, ""},
 		EndKey:      []string{doc.DocID, couchdb.MaxString},
 		IncludeDocs: true,
 	}
-	var res couchdb.ViewResponse
-	cursor.ApplyTo(&req)
-	err := couchdb.ExecView(c.db, consts.FilesByParentView, &req, &res)
-	if err != nil {
-		return nil, err
-	}
-	cursor.UpdateFrom(&res)
-
-	docs := make([]DirOrFileDoc, len(res.Rows))
-	for i, row := range res.Rows {
-		var doc DirOrFileDoc
-		err := json.Unmarshal(row.Doc, &doc)
+	var docs []*DirOrFileDoc
+	rows := couchdb.ExecView(c.db, consts.FilesByParentView, &req)
+	rows.WithCursor(cursor)
+	for {
+		done, err := rows.Next()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		docs[i] = doc
+		if done {
+			break
+		}
+		var doc *DirOrFileDoc
+		if err = rows.ScanDoc(&doc); err != nil {
+			return nil, nil, err
+		}
+		docs = append(docs, doc)
 	}
 
-	return docs, nil
+	return docs, rows.NextCursor(), nil
 }
 
 func (c *couchdbIndexer) DirLength(doc *DirDoc) (int, error) {
@@ -336,50 +339,45 @@ func (c *couchdbIndexer) DirLength(doc *DirDoc) (int, error) {
 		StartKey:   []string{doc.DocID, ""},
 		EndKey:     []string{doc.DocID, couchdb.MaxString},
 		Reduce:     true,
+		Group:      true,
 		GroupLevel: 1,
 	}
-	var res couchdb.ViewResponse
-	err := couchdb.ExecView(c.db, consts.FilesByParentView, &req, &res)
+	rows := couchdb.ExecView(c.db, consts.FilesByParentView, &req)
+	done, err := rows.Next()
 	if err != nil {
 		return 0, err
 	}
-
-	if len(res.Rows) == 0 {
+	if done {
 		return 0, nil
 	}
-
-	// Reduce of _count should give us a number value
-	f64, ok := res.Rows[0].Value.(float64)
-	if !ok {
+	var dirLength int
+	if err = rows.ScanValue(&dirLength); err != nil {
 		return 0, ErrWrongCouchdbState
 	}
-	return int(f64), nil
+	return dirLength, nil
 }
 
 func (c *couchdbIndexer) DirChildExists(dirID, name string) (bool, error) {
-	var res couchdb.ViewResponse
-
 	// consts.FilesByParentView keys are [parentID, type, name]
-	err := couchdb.ExecView(c.db, consts.FilesByParentView, &couchdb.ViewRequest{
+	req := &couchdb.ViewRequest{
 		Keys: []interface{}{
 			[]string{dirID, consts.FileType, name},
 			[]string{dirID, consts.DirType, name},
 		},
 		Reduce: true,
 		Group:  true,
-	}, &res)
+	}
+	rows := couchdb.ExecView(c.db, consts.FilesByParentView, req)
+	done, err := rows.Next()
 	if err != nil {
 		return false, err
 	}
-
-	if len(res.Rows) == 0 {
+	if done {
 		return false, nil
 	}
-
-	// Reduce of _count should give us a number value
-	f64, ok := res.Rows[0].Value.(float64)
-	if !ok {
+	var dirLength int
+	if err = rows.ScanValue(&dirLength); err != nil {
 		return false, ErrWrongCouchdbState
 	}
-	return int(f64) > 0, nil
+	return dirLength > 0, nil
 }

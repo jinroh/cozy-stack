@@ -31,7 +31,7 @@ func Fatal(msg ...interface{}) {
 
 // NeedCouchdb kill the process if there is no couchdb running
 func NeedCouchdb() {
-	db, err := checkup.HTTPChecker{URL: config.CouchURL().String()}.Check()
+	db, err := checkup.HTTPChecker{URL: config.CouchURL("/")}.Check()
 	if err != nil || db.Status() != checkup.Healthy {
 		Fatal("This test need couchdb to run.")
 	}

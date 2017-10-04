@@ -1,6 +1,7 @@
 package data
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/cozy/cozy-stack/pkg/couchdb"
@@ -161,7 +162,8 @@ func dbStatus(c echo.Context) error {
 		return err
 	}
 
-	status, err := couchdb.DBStatus(instance, doctype)
+	var status json.RawMessage
+	err := couchdb.DBStatus(instance, doctype, &status)
 	if err != nil {
 		return err
 	}
