@@ -226,10 +226,14 @@ func cleanOrphanAccounts(c echo.Context) error {
 	dryRun, _ := strconv.ParseBool(c.QueryParam("DryRun"))
 	results := make([]*result, 0)
 	domain := c.Param("domain")
-	db := couchdb.SimpleDatabasePrefix(domain)
+
+	db, err := instance.Get(domain)
+	if err != nil {
+		return err
+	}
 
 	var as []*accounts.Account
-	err := couchdb.GetAllDocs(db, consts.Accounts, nil, &as)
+	err = couchdb.GetAllDocs(db, consts.Accounts, nil, &as)
 	if couchdb.IsNoDatabaseError(err) {
 		return c.JSON(http.StatusOK, results)
 	}
