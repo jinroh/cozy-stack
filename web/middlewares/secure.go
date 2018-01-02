@@ -105,7 +105,7 @@ func Secure(conf *SecureConfig) echo.MiddlewareFunc {
 				h.Set(echo.HeaderXFrameOptions, xFrameHeader)
 			}
 			var cspHeader string
-			parent, _, siblings := SplitHost(c.Request().Host)
+			parent, _, siblings, _ := SplitHost(c.Request().Host)
 			if len(conf.CSPDefaultSrc) > 0 {
 				cspHeader += makeCSPHeader(parent, siblings, "default-src", conf.CSPDefaultSrc)
 			}
@@ -159,11 +159,17 @@ func makeCSPHeader(parent, siblings, header string, sources []CSPSource) string 
 		case CSPSrcBlob:
 			headers[i] = "blob:"
 		case CSPSrcParent:
-			headers[i] = parent
+			if parent != "" {
+				headers[i] = parent
+			}
 		case CSPSrcWS:
-			headers[i] = "ws://" + parent + " wss://" + parent
+			if parent != "" {
+				headers[i] = "ws://" + parent + " wss://" + parent
+			}
 		case CSPSrcSiblings:
-			headers[i] = siblings
+			if siblings != "" {
+				headers[i] = siblings
+			}
 		case CSPSrcAny:
 			headers[i] = "*"
 		case CSPUnsafeInline:

@@ -19,17 +19,32 @@ func Compose(handler echo.HandlerFunc, mws ...echo.MiddlewareFunc) echo.HandlerF
 
 // SplitHost returns a splitted host domain taking into account the subdomains
 // configuration mode used.
-func SplitHost(host string) (instanceHost, appSlug, siblings string) {
-	parts := strings.SplitN(host, ".", 2)
-	if len(parts) == 2 {
-		if config.GetConfig().Subdomains == config.NestedSubdomains {
-			return parts[1], parts[0], "*." + parts[1]
+func SplitHost(host string) (instanceHost, appSlug, siblings string, ok bool) {
+	var subDomain string
+	var parentDomain string
+
+	if mdn := config.GetConfig().MainDomainName; mdn != "" {
+		if !strings.HasSuffix(host, mdn) {
+			return
 		}
-		subs := strings.SplitN(parts[0], "-", 2)
-		if len(subs) == 2 {
-			return subs[0] + "." + parts[1], subs[1], "*." + parts[1]
+		subDomain = strings.TrimSuffix(host, mdn)
+		parentDomain = mdn[1:]
+	} else {
+		parts := strings.SplitN(host, ".", 2)
+		if len(parts) != 2 {
+			return host, "", "", true
 		}
-		return host, "", ""
+		subDomain = parts[0]
+		parentDomain = parts[1]
 	}
-	return parts[0], "", ""
+
+	if config.GetConfig().Subdomains == config.NestedSubdomains {
+		return parentDomain, subDomain, "*." + parentDomain, true
+	}
+
+	subs := strings.SplitN(subDomain, "-", 2)
+	if len(subs) == 2 {
+		return subs[0] + "." + parentDomain, subs[1], "*." + parentDomain, true
+	}
+	return host, "", "", true
 }

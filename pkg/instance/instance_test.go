@@ -86,18 +86,44 @@ func TestCreateInstanceBadDomain(t *testing.T) {
 		Locale: "en",
 	})
 	assert.Error(t, err, "An error is expected")
+	assert.Equal(t, instance.ErrIllegalDomain, err)
 
 	_, err = instance.Create(&instance.Options{
 		Domain: ".",
 		Locale: "en",
 	})
 	assert.Error(t, err, "An error is expected")
+	assert.Equal(t, instance.ErrIllegalDomain, err)
 
 	_, err = instance.Create(&instance.Options{
 		Domain: "foo/bar",
 		Locale: "en",
 	})
 	assert.Error(t, err, "An error is expected")
+	assert.Equal(t, instance.ErrIllegalDomain, err)
+
+	{
+		config.GetConfig().MainDomainName = ".mycozy.cloud"
+		config.GetConfig().Subdomains = config.FlatSubdomains
+
+		_, err = instance.Create(&instance.Options{
+			Domain: "coucou",
+		})
+		assert.Equal(t, instance.ErrIllegalDomain, err)
+
+		_, err = instance.Create(&instance.Options{
+			Domain: "foo-bar.mycozy.cloud",
+		})
+		assert.Equal(t, instance.ErrIllegalDomain, err)
+
+		_, err = instance.Create(&instance.Options{
+			Domain: "foo.bar.mycozy.cloud",
+		})
+		assert.Equal(t, instance.ErrIllegalDomain, err)
+
+		config.GetConfig().MainDomainName = ""
+		config.GetConfig().Subdomains = config.NestedSubdomains
+	}
 }
 
 func TestGetWrongInstance(t *testing.T) {

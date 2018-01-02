@@ -1016,7 +1016,25 @@ func validateDomain(domain string) (string, error) {
 	if strings.ContainsAny(domain[:1], illegalFirstChars) {
 		return "", ErrIllegalDomain
 	}
-	return strings.ToLower(domain), nil
+	domain = strings.ToLower(domain)
+
+	// When configuration specifies the main domain name, we check that the
+	// domain is actualle a subdomain of this main domain. If the configuration
+	// states that subdomains are "flat", the characters '-' and '.' are
+	// forbidden in the prefix of the domain.
+	if mdn := config.GetConfig().MainDomainName; mdn != "" {
+		if !strings.HasSuffix(domain, mdn) {
+			return "", ErrIllegalDomain
+		}
+		if config.GetConfig().Subdomains == config.FlatSubdomains {
+			label := strings.TrimSuffix(domain, mdn)
+			if strings.ContainsAny(label, ".-") {
+				return "", ErrIllegalDomain
+			}
+		}
+	}
+
+	return domain, nil
 }
 
 // ensure Instance implements couchdb.Doc

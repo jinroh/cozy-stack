@@ -80,6 +80,7 @@ var log = logger.WithNamespace("config")
 type Config struct {
 	Host                string
 	Port                int
+	MainDomainName      string
 	Assets              string
 	Doctypes            string
 	Subdomains          SubdomainType
@@ -421,9 +422,15 @@ func UseViper(v *viper.Viper) error {
 		adminSecretFile = defaultAdminSecretFileName
 	}
 
+	mainDomainName := v.GetString("main_domain_name")
+	if mainDomainName != "" && mainDomainName[0] != '.' {
+		mainDomainName = "." + mainDomainName
+	}
+
 	config = &Config{
 		Host:                v.GetString("host"),
 		Port:                v.GetInt("port"),
+		MainDomainName:      mainDomainName,
 		Subdomains:          subdomains,
 		AdminHost:           v.GetString("admin.host"),
 		AdminPort:           v.GetInt("admin.port"),

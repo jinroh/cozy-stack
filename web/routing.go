@@ -3,6 +3,7 @@
 package web
 
 import (
+	"net/http"
 	"strconv"
 	"time"
 
@@ -196,17 +197,22 @@ func CreateSubdomainProxy(router *echo.Echo, appsHandler echo.HandlerFunc) (*ech
 	main.HideBanner = true
 	main.Renderer = router.Renderer
 	main.Any("/*", func(c echo.Context) error {
-		// TODO(optim): minimize the number of instance requests
-		if parent, slug, _ := middlewares.SplitHost(c.Request().Host); slug != "" {
-			if i, err := instance.Get(parent); err == nil {
-				c.Set("instance", i)
-				c.Set("slug", slug)
-				return appsHandler(c)
-			}
+		parent, slug, _, ok := middlewares.SplitHost(c.Request().Host)
+		if !ok {
+			return echo.NewHTTPError(http.StatusBadRequest, "Bad host")
 		}
-
-		router.ServeHTTP(c.Response(), c.Request())
-		return nil
+		if slug != "" {
+			i, err := instance.Get(parent)
+			if err != nil {
+				return err
+			}
+			c.Set("instance", i)
+			c.Set("slug", slug)
+			return appsHandler(c)
+		} else {
+			router.ServeHTTP(c.Response(), c.Request())
+			return nil
+		}
 	})
 
 	main.HTTPErrorHandler = errors.HTMLErrorHandler
