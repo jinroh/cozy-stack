@@ -157,7 +157,7 @@ func GetLanguageFromHeader(header http.Header) (lang string) {
 	if acceptHeader == "" {
 		return
 	}
-	acceptLanguages := utils.SplitTrimString(acceptHeader, ",")
+	acceptLanguages := utils.SplitTrimString(acceptHeader, ',')
 	for _, tag := range acceptLanguages {
 		// tag may contain a ';q=' for a quality factor that we do not take into
 		// account.

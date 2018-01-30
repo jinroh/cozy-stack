@@ -87,7 +87,7 @@ func createHandler(c echo.Context) error {
 		DiskQuota:    diskQuota,
 		Settings:     settings,
 		SwiftCluster: swiftCluster,
-		Apps:         utils.SplitTrimString(c.QueryParam("Apps"), ","),
+		Apps:         utils.SplitTrimString(c.QueryParam("Apps"), ','),
 		Dev:          (c.QueryParam("Dev") == "true"),
 	})
 	if err != nil {

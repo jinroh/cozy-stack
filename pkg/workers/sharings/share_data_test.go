@@ -400,7 +400,7 @@ func TestSendDir(t *testing.T) {
 				assert.Equal(t, dirDoc.ID(), c.Param("docid"))
 				assert.Equal(t, consts.DirType, c.QueryParam("Type"))
 				assert.Equal(t, dirDoc.DocName, c.QueryParam("Name"))
-				dirTags := strings.Join(dirDoc.Tags, files.TagSeparator)
+				dirTags := strings.Join(dirDoc.Tags, string(files.TagSeparator))
 				assert.Equal(t, dirTags, c.QueryParam("Tags"))
 				assert.Equal(t, dirDoc.CreatedAt.Format(time.RFC1123),
 					c.QueryParam("Created_at"))

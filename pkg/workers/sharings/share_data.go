@@ -393,7 +393,7 @@ func SendFile(ins *instance.Instance, opts *SendOptions, fileDoc *vfs.FileDoc) e
 func SendDir(ins *instance.Instance, opts *SendOptions, dirDoc *vfs.DirDoc) error {
 	dirOpts := &dirOptions{}
 
-	dirTags := strings.Join(dirDoc.Tags, files.TagSeparator)
+	dirTags := strings.Join(dirDoc.Tags, string(files.TagSeparator))
 	dirOpts.tags = dirTags
 
 	var refs string

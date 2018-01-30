@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -75,19 +76,38 @@ func StripPort(domain string) string {
 // SplitTrimString slices s into all substrings a s separated by sep, like
 // strings.Split. In addition it will trim all those substrings and filter out
 // the empty ones.
-func SplitTrimString(s, sep string) []string {
-	if s == "" {
-		return []string{}
-	}
-	parts := strings.Split(s, sep)
-	filteredParts := parts[:0]
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			filteredParts = append(filteredParts, part)
+func SplitTrimString(s string, sep rune) (list []string) {
+	list = make([]string, 0)
+	beg := -1
+	end := -1
+	isSep := false
+	for pos, r := range s {
+		isSep = r == sep
+		if isSep || unicode.IsSpace(r) {
+			if end == -1 {
+				end = pos
+			}
+		} else {
+			if beg == -1 {
+				beg = pos
+			}
+			end = -1
+		}
+		if isSep && beg >= 0 && beg < end {
+			list = append(list, s[beg:end])
+			beg = -1
+			end = -1
 		}
 	}
-	return filteredParts
+	if !isSep && beg >= 0 {
+		if end == -1 {
+			end = len(s)
+		}
+		if beg < end {
+			list = append(list, s[beg:end])
+		}
+	}
+	return list
 }
 
 // FileExists returns whether or not the file exists on the current file

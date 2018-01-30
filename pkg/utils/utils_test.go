@@ -68,16 +68,46 @@ func TestStripPort(t *testing.T) {
 }
 
 func TestSplitTrimString(t *testing.T) {
-	parts1 := SplitTrimString("", ",")
-	assert.EqualValues(t, []string{}, parts1)
-	parts2 := SplitTrimString("foo,bar,baz,", ",")
-	assert.EqualValues(t, []string{"foo", "bar", "baz"}, parts2)
-	parts3 := SplitTrimString(",,,,", ",")
-	assert.EqualValues(t, []string{}, parts3)
-	parts4 := SplitTrimString("foo  ,, bar,  baz  ,", ",")
-	assert.EqualValues(t, []string{"foo", "bar", "baz"}, parts4)
-	parts5 := SplitTrimString("    ", ",")
-	assert.EqualValues(t, []string{}, parts5)
+	{
+		parts := SplitTrimString("", ',')
+		assert.EqualValues(t, []string{}, parts)
+	}
+	{
+		parts := SplitTrimString("foo,bar,baz,", ',')
+		assert.EqualValues(t, []string{"foo", "bar", "baz"}, parts)
+	}
+	{
+		parts := SplitTrimString(",,,,", ',')
+		assert.EqualValues(t, []string{}, parts)
+	}
+	{
+		parts := SplitTrimString("foo  ,, bar,  baz  日本語,", ',')
+		assert.EqualValues(t, []string{"foo", "bar", "baz  日本語"}, parts)
+	}
+	{
+		parts := SplitTrimString("日, foo, 本, 語", ',')
+		assert.EqualValues(t, []string{"日", "foo", "本", "語"}, parts)
+	}
+	{
+		parts := SplitTrimString("日, foo, 本 , 語  ", ',')
+		assert.EqualValues(t, []string{"日", "foo", "本", "語"}, parts)
+	}
+	{
+		parts := SplitTrimString("日,本,語 ,", ',')
+		assert.EqualValues(t, []string{"日", "本", "語"}, parts)
+	}
+	{
+		parts := SplitTrimString("    ", ',')
+		assert.EqualValues(t, []string{}, parts)
+	}
+	{
+		parts := SplitTrimString(" foo   ", ',')
+		assert.EqualValues(t, []string{"foo"}, parts)
+	}
+	{
+		parts := SplitTrimString(" foo bar,", ',')
+		assert.EqualValues(t, []string{"foo bar"}, parts)
+	}
 }
 
 func TestFileExists(t *testing.T) {

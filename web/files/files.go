@@ -30,7 +30,7 @@ import (
 )
 
 // TagSeparator is the character separating tags
-const TagSeparator = ","
+const TagSeparator = ','
 
 // ErrDocTypeInvalid is used when the document type sent is not
 // recognized
@@ -61,7 +61,7 @@ func CreationHandler(c echo.Context) error {
 }
 
 func createFileHandler(c echo.Context, fs vfs.VFS) (f *file, err error) {
-	tags := strings.Split(c.QueryParam("Tags"), TagSeparator)
+	tags := utils.SplitTrimString(c.QueryParam("Tags"), TagSeparator)
 
 	dirID := c.Param("file-id")
 	name := c.QueryParam("Name")

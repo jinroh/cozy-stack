@@ -9,7 +9,7 @@ import (
 )
 
 func updatesHandler(c echo.Context) error {
-	slugs := utils.SplitTrimString(c.QueryParam("Slugs"), ",")
+	slugs := utils.SplitTrimString(c.QueryParam("Slugs"), ',')
 	domain := c.QueryParam("Domain")
 	forceRegistry, _ := strconv.ParseBool(c.QueryParam("ForceRegistry"))
 	opts := &instance.UpdatesOptions{
