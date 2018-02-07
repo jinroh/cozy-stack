@@ -22,9 +22,8 @@ const (
 	// SessionMaxAge is the maximum duration of the session in seconds
 	SessionMaxAge = 7 * 24 * 60 * 60
 
-	// AppCookieMaxAge is the maximum duration of the application cookie in
-	// seconds
-	AppCookieMaxAge = 24 * 60 * 60
+	// AppMaxAge is the maximum duration of the application cookie in seconds
+	AppMaxAge = 24 * 60 * 60
 )
 
 var (
@@ -169,7 +168,7 @@ func FromAppCookie(c echo.Context, i *instance.Instance, slug string) (*Session,
 			return nil, ErrNoCookie
 		}
 
-		sessionID, err := crypto.DecodeAuthMessage(cookieMACConfig(i, AppCookieMaxAge),
+		sessionID, err := crypto.DecodeAuthMessage(cookieMACConfig(i, AppMaxAge),
 			[]byte(cookie.Value), []byte(slug))
 		if err != nil {
 			return nil, err
@@ -226,7 +225,7 @@ func (s *Session) ToCookie() (*http.Cookie, error) {
 
 // ToAppCookie returns an http.Cookie for this Session on an app subdomain
 func (s *Session) ToAppCookie(domain, slug string) (*http.Cookie, error) {
-	encoded, err := crypto.EncodeAuthMessage(cookieMACConfig(s.Instance, AppCookieMaxAge), []byte(s.ID()), []byte(slug))
+	encoded, err := crypto.EncodeAuthMessage(cookieMACConfig(s.Instance, AppMaxAge), []byte(s.ID()), []byte(slug))
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +233,7 @@ func (s *Session) ToAppCookie(domain, slug string) (*http.Cookie, error) {
 	return &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    string(encoded),
-		MaxAge:   AppCookieMaxAge,
+		MaxAge:   0,
 		Path:     "/",
 		Domain:   utils.StripPort(domain),
 		Secure:   !s.Instance.Dev,
