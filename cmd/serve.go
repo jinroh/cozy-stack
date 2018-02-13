@@ -114,7 +114,7 @@ example), you can use the --appdir flag like this:
 			return err
 		case <-sigs:
 			fmt.Println("\nReceived interrupt signal:")
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 			defer cancel() // make gometalinter happy
 			if err := group.Shutdown(ctx); err != nil {
 				return err

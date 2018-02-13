@@ -119,7 +119,7 @@ func makeExecWorkerFunc() jobs.WorkerFunc {
 				}
 			}
 			if errs := scanOut.Err(); errs != nil {
-				log.Errorf("could not scan stdout: %s", err)
+				log.Error("could not scan stdout:", err)
 			}
 		}()
 

@@ -133,7 +133,11 @@ func (w *konnectorWorker) PrepareWorkDir(ctx *jobs.WorkerContext, i *instance.In
 	if err != nil {
 		return
 	}
-	defer tarFile.Close()
+	defer func() {
+		if errc := tarFile.Close(); err == nil {
+			err = errc
+		}
+	}()
 
 	// Create the folder in which the konnector has the right to write.
 	// {

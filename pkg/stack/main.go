@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cozy/checkup"
+	"github.com/cozy/cozy-stack/pkg/cache"
 	"github.com/cozy/cozy-stack/pkg/config"
 	"github.com/cozy/cozy-stack/pkg/instance"
 	"github.com/cozy/cozy-stack/pkg/jobs"
@@ -119,6 +120,7 @@ security features. Please do not use this binary as your production server.
 
 	// Global shutdowner that composes all the running processes of the stack
 	processes = utils.NewGroupShutdown(
+		cache.Cleaner(),
 		broker,
 		schder,
 		cronUpdates,
