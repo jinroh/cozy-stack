@@ -29,6 +29,7 @@ import (
 	"github.com/cozy/cozy-stack/pkg/scheduler"
 	"github.com/cozy/cozy-stack/pkg/vfs"
 	"github.com/cozy/cozy-stack/pkg/vfs/vfsafero"
+	"github.com/cozy/cozy-stack/pkg/vfs/vfsminio"
 	"github.com/cozy/cozy-stack/pkg/vfs/vfsswift"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/sirupsen/logrus"
@@ -202,6 +203,8 @@ func (i *Instance) makeVFS() error {
 		} else {
 			i.vfs, err = vfsswift.New(index, disk, mutex, i.Domain)
 		}
+	case config.SchemeMinio:
+		i.vfs, err = vfsminio.New(index, disk, mutex, i.Domain)
 	default:
 		err = fmt.Errorf("instance: unknown storage provider %s", fsURL.Scheme)
 	}

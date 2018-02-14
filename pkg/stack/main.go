@@ -82,10 +82,14 @@ security features. Please do not use this binary as your production server.
 
 	// Init the main global connection to the swift server
 	fsURL := config.FsURL()
-	if fsURL.Scheme == config.SchemeSwift {
-		if err = config.InitSwiftConnection(fsURL); err != nil {
-			return
-		}
+	switch fsURL.Scheme {
+	case config.SchemeSwift:
+		err = config.InitSwiftConnection(fsURL)
+	case config.SchemeMinio:
+		err = config.InitMinioConnection(fsURL)
+	}
+	if err != nil {
+		return
 	}
 
 	// Start update cron for auto-updates

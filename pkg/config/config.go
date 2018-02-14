@@ -71,6 +71,8 @@ const (
 	SchemeMem = "mem"
 	// SchemeSwift is the URL scheme used to configure a swift filesystem.
 	SchemeSwift = "swift"
+	// SchemeMinio is the URL scheme used to configure a minio filesystem.
+	SchemeMinio = "minio"
 )
 
 // defaultAdminSecretFileName is the default name of the file containing the
