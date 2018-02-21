@@ -41,14 +41,14 @@ var ErrDocTypeInvalid = errors.New("Invalid document type")
 // parameter of the request, it will either upload a new file or
 // create a new directory.
 func CreationHandler(c echo.Context) error {
-	instance := middlewares.GetInstance(c)
+	inst := middlewares.GetInstance(c)
 	var doc jsonapi.Object
 	var err error
 	switch c.QueryParam("Type") {
 	case consts.FileType:
-		doc, err = createFileHandler(c, instance.VFS())
+		doc, err = createFileHandler(c, inst)
 	case consts.DirType:
-		doc, err = createDirHandler(c, instance.VFS())
+		doc, err = createDirHandler(c, inst)
 	default:
 		err = ErrDocTypeInvalid
 	}
@@ -60,7 +60,7 @@ func CreationHandler(c echo.Context) error {
 	return jsonapi.Data(c, http.StatusCreated, doc, nil)
 }
 
-func createFileHandler(c echo.Context, fs vfs.VFS) (f *file, err error) {
+func createFileHandler(c echo.Context, inst *instance.Instance) (f *file, err error) {
 	tags := strings.Split(c.QueryParam("Tags"), TagSeparator)
 
 	dirID := c.Param("file-id")
@@ -76,7 +76,7 @@ func createFileHandler(c echo.Context, fs vfs.VFS) (f *file, err error) {
 		return
 	}
 
-	file, err := fs.CreateFile(doc, nil)
+	file, err := inst.VFS().CreateFile(doc, nil)
 	if err != nil {
 		return
 	}
@@ -91,14 +91,17 @@ func createFileHandler(c echo.Context, fs vfs.VFS) (f *file, err error) {
 	if err != nil {
 		return
 	}
-	instance := middlewares.GetInstance(c)
-	f = newFile(doc, instance)
+
+	sessionID := middlewares.GetSessionID(c)
+	f = newFile(doc, inst, sessionID)
 	return
 }
 
-func createDirHandler(c echo.Context, fs vfs.VFS) (*dir, error) {
+func createDirHandler(c echo.Context, inst *instance.Instance) (*dir, error) {
 	path := c.QueryParam("Path")
 	tags := utils.SplitTrimString(c.QueryParam("Tags"), TagSeparator)
+
+	fs := inst.VFS()
 
 	var doc *vfs.DirDoc
 	var err error
@@ -196,7 +199,7 @@ func OverwriteFileContentHandler(c echo.Context) (err error) {
 			err = WrapVfsError(err)
 			return
 		}
-		err = fileData(c, http.StatusOK, newdoc, nil)
+		err = fileData(c, http.StatusOK, newdoc, false)
 	}()
 
 	_, err = io.Copy(file, c.Request().Body)
@@ -289,7 +292,7 @@ func applyPatch(c echo.Context, instance *instance.Instance, patch *vfs.DocPatch
 	if err != nil {
 		return WrapVfsError(err)
 	}
-	return fileData(c, http.StatusOK, doc, nil)
+	return fileData(c, http.StatusOK, doc, false)
 }
 
 // ReadMetadataFromIDHandler handles all GET requests on /files/:file-
@@ -311,7 +314,7 @@ func ReadMetadataFromIDHandler(c echo.Context) error {
 	if dir != nil {
 		return dirData(c, http.StatusOK, dir)
 	}
-	return fileData(c, http.StatusOK, file, nil)
+	return fileData(c, http.StatusOK, file, true)
 }
 
 // GetChildrenHandler returns a list of children of a folder
@@ -351,7 +354,7 @@ func ReadMetadataFromPathHandler(c echo.Context) error {
 	if dir != nil {
 		return dirData(c, http.StatusOK, dir)
 	}
-	return fileData(c, http.StatusOK, file, nil)
+	return fileData(c, http.StatusOK, file, true)
 }
 
 // ReadFileContentFromIDHandler handles all GET requests on /files/:file-id
@@ -365,21 +368,7 @@ func ReadFileContentFromIDHandler(c echo.Context) error {
 		return WrapVfsError(err)
 	}
 
-	err = checkPerm(c, permissions.GET, nil, doc)
-	if err != nil {
-		return err
-	}
-
-	disposition := "inline"
-	if c.QueryParam("Dl") == "1" {
-		disposition = "attachment"
-	}
-	err = vfs.ServeFileContent(instance.VFS(), doc, disposition, c.Request(), c.Response())
-	if err != nil {
-		return WrapVfsError(err)
-	}
-
-	return nil
+	return sendFile(c, instance, doc, true)
 }
 
 // HeadDirOrFile handles HEAD requests on directory or file to check their
@@ -404,46 +393,52 @@ func HeadDirOrFile(c echo.Context) error {
 	return nil
 }
 
-// ThumbnailHandler serves thumbnails of the images/photos
+// ThumbnailHandler serves thumbnails of the images/photos.
+//
+// In order to allow browsers applications to download thumbnails directly via
+// an <img> tag, this handler can handle a secret directly inside the URL. This
+// secret is only checked for a request send without an "Authorization" header
+// but with a valid session cookie.
 func ThumbnailHandler(c echo.Context) error {
 	instance := middlewares.GetInstance(c)
 
+	fileID := c.Param("file-id")
+	format := c.Param("format")
 	secret := c.Param("secret")
-	path, err := vfs.GetStore().GetFile(instance.Domain, secret)
-	if err != nil {
-		return WrapVfsError(err)
-	}
-	if path == "" {
-		return jsonapi.NewError(http.StatusBadRequest, "Wrong download token")
+
+	hasGoodSecret := false
+
+	if secret != "" {
+		hasGoodSecret = vfs.VerifySecureLinkSecret(instance.SessionSecret,
+			secret, fileID, middlewares.GetSessionID(c))
+		if !hasGoodSecret {
+			return jsonapi.NewError(http.StatusUnauthorized, "Wrong download secret")
+		}
 	}
 
-	doc, err := instance.VFS().FileByID(c.Param("file-id"))
+	doc, err := instance.VFS().FileByID(fileID)
 	if err != nil {
 		return WrapVfsError(err)
 	}
-
-	expected, err := doc.Path(instance.VFS())
-	if err != nil {
-		return WrapVfsError(err)
-	}
-	if expected != path {
-		return jsonapi.NewError(http.StatusBadRequest, "Wrong download token")
+	if !hasGoodSecret {
+		err = checkPerm(c, permissions.GET, nil, doc)
+		if err != nil {
+			return err
+		}
+	} else {
+		// For thumbnails with a secret in the URL, we can benefit from a long term
+		// cache since the secret contains the checksum of the image file.
+		c.Response().Header().
+			Set("Cache-Control", "max-age=31536000, private, immutable")
 	}
 
 	fs := instance.ThumbsFS()
-	return fs.ServeThumbContent(c.Response(), c.Request(), doc, c.Param("format"))
+	return fs.ServeThumbContent(c.Response(), c.Request(), doc, format)
 }
 
-func sendFileFromPath(c echo.Context, path string, checkPermission bool) error {
-	instance := middlewares.GetInstance(c)
-
-	doc, err := instance.VFS().FileByPath(path)
-	if err != nil {
-		return WrapVfsError(err)
-	}
-
+func sendFile(c echo.Context, instance *instance.Instance, doc *vfs.FileDoc, checkPermission bool) error {
 	if checkPermission {
-		err = permissions.Allow(c, permissions.GET, doc)
+		err := checkPerm(c, permissions.GET, nil, doc)
 		if err != nil {
 			return err
 		}
@@ -458,11 +453,11 @@ func sendFileFromPath(c echo.Context, path string, checkPermission bool) error {
 			c.Response().Header().Del(echo.HeaderXFrameOptions)
 		}
 	}
-	err = vfs.ServeFileContent(instance.VFS(), doc, disposition, c.Request(), c.Response())
+
+	err := vfs.ServeFileContent(instance.VFS(), doc, disposition, c.Request(), c.Response())
 	if err != nil {
 		return WrapVfsError(err)
 	}
-
 	return nil
 }
 
@@ -470,7 +465,12 @@ func sendFileFromPath(c echo.Context, path string, checkPermission bool) error {
 // aiming at downloading a file given its path. It serves the file in in
 // attachment mode.
 func ReadFileContentFromPathHandler(c echo.Context) error {
-	return sendFileFromPath(c, c.QueryParam("Path"), true)
+	instance := middlewares.GetInstance(c)
+	doc, err := instance.VFS().FileByPath(c.QueryParam("Path"))
+	if err != nil {
+		return WrapVfsError(err)
+	}
+	return sendFile(c, instance, doc, true)
 }
 
 // ArchiveDownloadCreateHandler handles requests to /files/archive and stores the
@@ -529,36 +529,24 @@ func FileDownloadCreateHandler(c echo.Context) error {
 	instance := middlewares.GetInstance(c)
 	var doc *vfs.FileDoc
 	var err error
-	var path string
 
-	if path = c.QueryParam("Path"); path != "" {
-		if doc, err = instance.VFS().FileByPath(path); err != nil {
-			return WrapVfsError(err)
-		}
+	if path := c.QueryParam("Path"); path != "" {
+		doc, err = instance.VFS().FileByPath(path)
 	} else if id := c.QueryParam("Id"); id != "" {
-		if doc, err = instance.VFS().FileByID(id); err != nil {
-			return WrapVfsError(err)
-		}
-		if path, err = doc.Path(instance.VFS()); err != nil {
-			return WrapVfsError(err)
-		}
+		doc, err = instance.VFS().FileByID(id)
+	} else {
+		return jsonapi.BadRequest(errors.New("Missing Id or Path query parameter"))
 	}
-
-	err = checkPerm(c, "GET", nil, doc)
-	if err != nil {
-		return err
-	}
-
-	secret, err := vfs.GetStore().AddFile(instance.Domain, path)
 	if err != nil {
 		return WrapVfsError(err)
 	}
 
-	links := &jsonapi.LinksList{
-		Related: "/files/downloads/" + secret + "/" + doc.DocName,
+	err = checkPerm(c, permissions.GET, nil, doc)
+	if err != nil {
+		return err
 	}
 
-	return fileData(c, http.StatusOK, doc, links)
+	return fileData(c, http.StatusOK, doc, true)
 }
 
 // ArchiveDownloadHandler handles requests to /files/archive/:secret/whatever.zip
@@ -581,14 +569,16 @@ func ArchiveDownloadHandler(c echo.Context) error {
 func FileDownloadHandler(c echo.Context) error {
 	instance := middlewares.GetInstance(c)
 	secret := c.Param("secret")
-	path, err := vfs.GetStore().GetFile(instance.Domain, secret)
+	fileID := c.Param("file-id")
+	sessionID := middlewares.GetSessionID(c)
+	if !vfs.VerifySecureLinkSecret(instance.SessionSecret, secret, fileID, sessionID) {
+		return jsonapi.NewError(http.StatusBadRequest, "Wrong download token")
+	}
+	doc, err := instance.VFS().FileByID(fileID)
 	if err != nil {
 		return WrapVfsError(err)
 	}
-	if path == "" {
-		return jsonapi.NewError(http.StatusBadRequest, "Wrong download token")
-	}
-	return sendFileFromPath(c, path, false)
+	return sendFile(c, instance, doc, false)
 }
 
 // TrashHandler handles all DELETE requests on /files/:file-id and
@@ -635,7 +625,7 @@ func TrashHandler(c echo.Context) error {
 	if errt != nil {
 		return WrapVfsError(errt)
 	}
-	return fileData(c, http.StatusOK, doc, nil)
+	return fileData(c, http.StatusOK, doc, false)
 }
 
 // ReadTrashFilesHandler handle GET requests on /files/trash and return the
@@ -685,7 +675,7 @@ func RestoreTrashFileHandler(c echo.Context) error {
 	if errt != nil {
 		return WrapVfsError(errt)
 	}
-	return fileData(c, http.StatusOK, doc, nil)
+	return fileData(c, http.StatusOK, doc, false)
 }
 
 // ClearTrashHandler handles DELETE request to clear the trash
@@ -755,6 +745,7 @@ const maxMangoLimit = 100
 // used to retrieve files and their metadata from a mango query.
 func FindFilesMango(c echo.Context) error {
 	instance := middlewares.GetInstance(c)
+	sessionID := middlewares.GetSessionID(c)
 	var findRequest map[string]interface{}
 
 	if err := json.NewDecoder(c.Request().Body).Decode(&findRequest); err != nil {
@@ -802,12 +793,11 @@ func FindFilesMango(c echo.Context) error {
 		if d != nil {
 			out[i] = newDir(d)
 		} else {
-			out[i] = newFile(f, instance)
+			out[i] = newFile(f, instance, sessionID)
 		}
 	}
 
 	return jsonapi.DataListWithTotal(c, http.StatusOK, total, out, nil)
-
 }
 
 // Routes sets the routing for the files service
@@ -820,7 +810,6 @@ func Routes(router *echo.Group) {
 	router.POST("/_find", FindFilesMango)
 
 	router.HEAD("/:file-id", HeadDirOrFile)
-
 	router.GET("/metadata", ReadMetadataFromPathHandler)
 	router.GET("/:file-id", ReadMetadataFromIDHandler)
 	router.GET("/:file-id/relationships/contents", GetChildrenHandler)
@@ -832,13 +821,14 @@ func Routes(router *echo.Group) {
 	router.POST("/:file-id", CreationHandler)
 	router.PUT("/:file-id", OverwriteFileContentHandler)
 
-	router.GET("/:file-id/thumbnails/:secret/:format", ThumbnailHandler)
+	router.GET("/:file-id/thumbnails/:format", ThumbnailHandler)
+	router.GET("/:file-id/thumbnails/:format/:secret", ThumbnailHandler)
 
 	router.POST("/archive", ArchiveDownloadCreateHandler)
 	router.GET("/archive/:secret/:fake-name", ArchiveDownloadHandler)
 
 	router.POST("/downloads", FileDownloadCreateHandler)
-	router.GET("/downloads/:secret/:fake-name", FileDownloadHandler)
+	router.GET("/downloads/:secret/:file-id", FileDownloadHandler)
 
 	router.POST("/:file-id/relationships/referenced_by", AddReferencedHandler)
 	router.DELETE("/:file-id/relationships/referenced_by", RemoveReferencedHandler)
